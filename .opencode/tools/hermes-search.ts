@@ -1,5 +1,20 @@
 const HERMES_URL = process.env.HERMES_URL || "http://127.0.0.1:3412";
 
+async function hermesFetch(url: string, opts?: RequestInit, retries = 2): Promise<Response> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url, opts);
+      if (res.ok) return res;
+      if (i === retries) return res;
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    } catch {
+      if (i === retries) throw;
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+  throw new Error("Hermes service unreachable");
+}
+
 export default {
   description: "Search the persistent memory vault for relevant knowledge. ALWAYS search before answering technical questions to avoid repeating past mistakes or missing prior context.",
   args: {
@@ -32,7 +47,7 @@ export default {
   },
   async execute(args: any) {
     try {
-      const response = await fetch(`${HERMES_URL}/memory/search`, {
+      const response = await hermesFetch(`${HERMES_URL}/memory/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args),

@@ -145,7 +145,7 @@ export function createSynthesisEngine(vault: Vault, search: SearchEngine) {
     return words.filter((w) => !stopWords.has(w) && w.length > 3);
   }
 
-  return { synthesize };
+  return { synthesize, isContradictory, extractNouns };
 }
 
 export type SynthesisEngine = ReturnType<typeof createSynthesisEngine>;

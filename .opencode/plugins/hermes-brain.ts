@@ -1,5 +1,20 @@
 const HERMES_URL = process.env.HERMES_URL || "http://127.0.0.1:3412";
 
+async function hermesFetch(url: string, opts?: RequestInit, retries = 2): Promise<Response> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url, opts);
+      if (res.ok) return res;
+      if (i === retries) return res;
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    } catch {
+      if (i === retries) throw;
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+  throw new Error("Hermes service unreachable");
+}
+
 let currentSessionId: string | null = null;
 let sessionStartTime: number = 0;
 let toolCallCount: number = 0;
@@ -16,7 +31,7 @@ export function hermesBrain(pluginContext: any) {
         const goal = session.goal || "No specific goal set";
 
         try {
-          const startRes = await fetch(`${HERMES_URL}/session/start`, {
+          const startRes = await hermesFetch(`${HERMES_URL}/session/start`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ project: projectName, goal }),
@@ -28,7 +43,7 @@ export function hermesBrain(pluginContext: any) {
             toolCallCount = 0;
           }
 
-          const ctxRes = await fetch(`${HERMES_URL}/context/compiled`, {
+          const ctxRes = await hermesFetch(`${HERMES_URL}/context/compiled`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ project: projectName, goal }),
@@ -76,7 +91,7 @@ export function hermesBrain(pluginContext: any) {
             .join("\n")
             .slice(0, 1000);
 
-          const response = await fetch(`${HERMES_URL}/session/end`, {
+          const response = await hermesFetch(`${HERMES_URL}/session/end`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -92,7 +107,7 @@ export function hermesBrain(pluginContext: any) {
           const endData = await response.json();
 
           if (endData.ok) {
-            const synthResponse = await fetch(`${HERMES_URL}/session/synthesize`, {
+            const synthResponse = await hermesFetch(`${HERMES_URL}/session/synthesize`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -129,7 +144,7 @@ export function hermesBrain(pluginContext: any) {
         toolCallCount = 0;
 
         try {
-          const response = await fetch(`${HERMES_URL}/session/start`, {
+          const response = await hermesFetch(`${HERMES_URL}/session/start`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

@@ -93,7 +93,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"),
   registerHealthRoutes(app, health);
   registerContextRoutes(app, context);
   registerSynthesisRoutes(app, synthesis, vault);
-  registerKnowledgeRoutes(app, dedup, linker, graph);
+  registerKnowledgeRoutes(app, dedup, linker, graph, vault, synthesis);
   registerChatRoutes(app, llmRouter, ctxInjector, sessions, chatConfig);
 
   await app.register(fastifyStatic, {

@@ -1,8 +1,20 @@
 import type { Vault } from "./vault.js";
 import type { Note, KnowledgeEdge, KnowledgeGraph, NoteType } from "../types.js";
 
+const GRAPH_CACHE_TTL = 10000;
+
 export function createKnowledgeGraph(vault: Vault) {
+  let cache: { timestamp: number; graph: KnowledgeGraph } | null = null;
+
+  function invalidateCache() {
+    cache = null;
+  }
+
   async function build(allNotes?: Note[]): Promise<KnowledgeGraph> {
+    if (!allNotes && cache && Date.now() - cache.timestamp < GRAPH_CACHE_TTL) {
+      return cache.graph;
+    }
+    if (!allNotes) allNotes = await vault.readAllNotes();
     if (!allNotes) allNotes = await vault.readAllNotes();
 
     const nodes = new Map<string, Note>();
@@ -46,7 +58,9 @@ export function createKnowledgeGraph(vault: Vault) {
       }
     }
 
-    return { nodes, edges };
+    const graph: KnowledgeGraph = { nodes, edges };
+    if (!allNotes) cache = { timestamp: Date.now(), graph };
+    return graph;
   }
 
   async function getNeighbors(noteId: string, maxDepth: number = 1): Promise<{ node: Note; depth: number }[]> {

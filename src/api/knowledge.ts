@@ -2,8 +2,10 @@ import type { FastifyInstance } from "fastify";
 import type { DedupEngine } from "../core/dedup.js";
 import type { LinkSuggester } from "../core/linker.js";
 import type { KnowledgeGraphEngine } from "../core/graph.js";
+import type { Vault } from "../core/vault.js";
+import type { SynthesisEngine } from "../core/synthesis.js";
 
-export function registerKnowledgeRoutes(app: FastifyInstance, dedup: DedupEngine, linker: LinkSuggester, graph: KnowledgeGraphEngine) {
+export function registerKnowledgeRoutes(app: FastifyInstance, dedup: DedupEngine, linker: LinkSuggester, graph: KnowledgeGraphEngine, vault: Vault, synthesis: SynthesisEngine) {
   app.get("/knowledge/dedup", async () => {
     const groups = await dedup.findDuplicates();
     return { ok: true, groups };
@@ -12,7 +14,15 @@ export function registerKnowledgeRoutes(app: FastifyInstance, dedup: DedupEngine
   app.post<{ Body: { primaryId: string; duplicateIds: string[] } }>(
     "/knowledge/dedup/merge-preview",
     async (req) => {
-      const { primaryId } = req.body;
+      const { primaryId, duplicateIds } = req.body;
+      if (duplicateIds && duplicateIds.length > 0) {
+        const allNotes = await vault.readAllNotes();
+        const primary = allNotes.find((n) => n.id === primaryId);
+        if (!primary) return { ok: false, error: "Primary note not found" };
+        const duplicates = allNotes.filter((n) => duplicateIds.includes(n.id));
+        const merged = await dedup.suggestMerge({ primary, duplicates, similarity: 1 });
+        return { ok: true, preview: merged };
+      }
       const groups = await dedup.findDuplicates();
       const group = groups.find((g) => g.primary.id === primaryId);
       if (!group) return { ok: false, error: "Group not found" };
@@ -43,6 +53,24 @@ export function registerKnowledgeRoutes(app: FastifyInstance, dedup: DedupEngine
   });
 
   app.get("/knowledge/contradictions", async () => {
-    return { ok: true, note: "Contradiction scanning requires a session context. Use /session/synthesize after a session." };
+    const allNotes = await vault.readAllNotes();
+    const contradictions: { noteA: string; noteB: string; reason: string }[] = [];
+    const knowledgeNotes = allNotes.filter((n) => !["session", "index"].includes(n.type));
+
+    for (let i = 0; i < knowledgeNotes.length; i++) {
+      for (let j = i + 1; j < knowledgeNotes.length; j++) {
+        const a = knowledgeNotes[i];
+        const b = knowledgeNotes[j];
+        if (synthesis.isContradictory(a.body, b.body) || synthesis.isContradictory(b.body, a.body)) {
+          contradictions.push({
+            noteA: a.title,
+            noteB: b.title,
+            reason: "Potential contradiction detected between these notes",
+          });
+        }
+      }
+    }
+
+    return { ok: true, contradictions, totalScanned: knowledgeNotes.length };
   });
 }
