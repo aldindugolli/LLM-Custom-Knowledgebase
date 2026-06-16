@@ -38,13 +38,12 @@ export interface MemoryQuery {
   project?: string;
   limit?: number;
   offset?: number;
-  semantic?: boolean;
 }
 
 export interface MemoryResult {
   note: Note;
   score: number;
-  matchType: "keyword" | "semantic" | "tag" | "exact";
+  matchType: "keyword" | "tag" | "exact";
 }
 
 export interface SessionContext {
@@ -86,7 +85,6 @@ export interface VaultConfig {
   path: string;
   port: number;
   host: string;
-  embeddingModel?: string;
 }
 
 export interface KnowledgeEdge {

@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { Vault } from "./vault.js";
 import type { Note, KnowledgeEdge, KnowledgeGraph, NoteType } from "../types.js";
 
@@ -15,13 +16,10 @@ export function createKnowledgeGraph(vault: Vault) {
       return cache.graph;
     }
     if (!allNotes) allNotes = await vault.readAllNotes();
-    if (!allNotes) allNotes = await vault.readAllNotes();
 
     const nodes = new Map<string, Note>();
     const edges: KnowledgeEdge[] = [];
-    const resolvedNotes = await Promise.all(
-      allNotes.map(async (n) => vault.resolveWikilinks(n, allNotes!))
-    );
+    const resolvedNotes = await vault.resolveAllWikilinks(allNotes);
     resolvedNotes.forEach((n) => nodes.set(n.id, n));
 
     for (const note of resolvedNotes) {
@@ -90,22 +88,18 @@ export function createKnowledgeGraph(vault: Vault) {
 
   async function findOrphans(allNotes?: Note[]): Promise<Note[]> {
     if (!allNotes) allNotes = await vault.readAllNotes();
-    const resolved = await Promise.all(
-      allNotes.map(async (n) => vault.resolveWikilinks(n, allNotes!))
-    );
+    const resolved = await vault.resolveAllWikilinks(allNotes);
     return resolved.filter((n) => n.backlinks.length === 0 && n.type !== "index" && n.type !== "session");
   }
 
   async function findBrokenLinks(allNotes?: Note[]): Promise<{ sourcePath: string; target: string }[]> {
     if (!allNotes) allNotes = await vault.readAllNotes();
     const broken: { sourcePath: string; target: string }[] = [];
+    const linkMap = new Map(allNotes.map((n) => [path.basename(n.path, ".md"), n]));
 
     for (const note of allNotes) {
       for (const wl of note.wikilinks) {
-        const exists = allNotes.some((n) => {
-          const base = n.path.replace(/\.md$/, "").split("/").pop();
-          return base === wl;
-        });
+        const exists = linkMap.has(wl);
         if (!exists) {
           broken.push({ sourcePath: note.path, target: wl });
         }

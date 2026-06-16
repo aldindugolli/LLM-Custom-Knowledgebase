@@ -163,22 +163,42 @@ export function createVault(cfg: VaultConfig) {
     await fs.writeFile(fp, content, "utf-8");
   }
 
-  async function resolveWikilinks(note: Note, allNotes: Note[]): Promise<Note> {
-    const linkMap = new Map<string, Note>();
+  function buildLinkMap(allNotes: Note[]): Map<string, Note> {
+    const map = new Map<string, Note>();
     for (const n of allNotes) {
-      const key = path.basename(n.path, ".md");
-      linkMap.set(key, n);
+      map.set(path.basename(n.path, ".md"), n);
     }
-    const backlinks: string[] = [];
+    return map;
+  }
+
+  function buildWikilinkIndex(allNotes: Note[]): Map<string, Set<string>> {
+    const index = new Map<string, Set<string>>();
     for (const n of allNotes) {
-      if (n.wikilinks.some((wl) => {
-        const targetKey = path.basename(n.path, ".md");
-        return wl === targetKey || wl === path.basename(note.path, ".md");
-      })) {
-        backlinks.push(n.path);
+      const noteKey = path.basename(n.path, ".md");
+      for (const wl of n.wikilinks) {
+        if (!index.has(wl)) index.set(wl, new Set());
+        index.get(wl)!.add(noteKey);
       }
     }
-    note.backlinks = [...new Set(backlinks)];
+    return index;
+  }
+
+  async function resolveAllWikilinks(allNotes: Note[]): Promise<Note[]> {
+    const linkMap = buildLinkMap(allNotes);
+    const reverseIndex = buildWikilinkIndex(allNotes);
+    for (const n of allNotes) {
+      const noteKey = path.basename(n.path, ".md");
+      const backlinkKeys = reverseIndex.get(noteKey);
+      n.backlinks = backlinkKeys ? [...backlinkKeys].map((k) => linkMap.get(k)?.path || k) : [];
+    }
+    return allNotes;
+  }
+
+  async function resolveWikilinks(note: Note, allNotes: Note[]): Promise<Note> {
+    const reverseIndex = buildWikilinkIndex(allNotes);
+    const noteKey = path.basename(note.path, ".md");
+    const backlinkKeys = reverseIndex.get(noteKey);
+    note.backlinks = backlinkKeys ? [...backlinkKeys] : [];
     return note;
   }
 
@@ -197,6 +217,7 @@ export function createVault(cfg: VaultConfig) {
     readAllNotes,
     deleteNote,
     resolveWikilinks,
+    resolveAllWikilinks,
     getVaultPath,
     rebuildIndex,
   };

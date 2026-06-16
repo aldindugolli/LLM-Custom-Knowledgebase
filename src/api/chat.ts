@@ -59,19 +59,29 @@ export function registerChatRoutes(
     const enriched = await context.inject(messages, sessionId);
     const abortController = new AbortController();
     let fullResponse = "";
+    let streamEnded = false;
 
-    const onToken = (token: string) => {
-      fullResponse += token;
-      reply.raw.write(`data: ${JSON.stringify({ token })}\n\n`);
-    };
-
-    const onDone = () => {
+    const endStream = () => {
+      if (streamEnded) return;
+      streamEnded = true;
       if (lastUserMsg) persist(lastUserMsg.content, fullResponse).catch((e) => console.error("[Chat] Persist failed:", e));
       try { reply.raw.write(`data: ${JSON.stringify({ done: true })}\n\n`); } catch (e) { console.error("[Chat] SSE write (done) failed:", e); }
       try { reply.raw.end(); } catch (e) { console.error("[Chat] SSE end failed:", e); }
     };
 
+    const onToken = (token: string) => {
+      if (streamEnded) return;
+      fullResponse += token;
+      reply.raw.write(`data: ${JSON.stringify({ token })}\n\n`);
+    };
+
+    const onDone = () => {
+      endStream();
+    };
+
     const onError = (err: Error) => {
+      if (streamEnded) return;
+      streamEnded = true;
       try {
         reply.raw.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
         reply.raw.end();
@@ -82,7 +92,7 @@ export function registerChatRoutes(
 
     req.raw.on("close", () => {
       abortController.abort();
-      onDone();
+      endStream();
     });
 
     router.chat(chatMode, enriched, onToken, onDone, onError, abortController.signal, model);
