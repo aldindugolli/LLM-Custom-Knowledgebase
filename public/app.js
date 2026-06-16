@@ -89,7 +89,7 @@ async function loadModels() {
       if (!sel.value) sel.selectedIndex = 0;
       currentModel = sel.value;
     }
-  } catch {}
+  } catch (e) { console.warn('[UI] loadModels failed:', e); }
 }
 
 async function initChat() {
@@ -198,7 +198,7 @@ async function initChat() {
               assistantDiv.classList.add('msg-error');
               contentDiv.textContent = `Error: ${data.error}`;
             }
-          } catch {}
+          } catch (e) { console.warn('[UI] SSE parse error:', e); }
         }
       }
 
@@ -340,7 +340,7 @@ async function pollStats() {
   try {
     const data = await api('/vault/stats');
     if (data.ok) document.getElementById('stTotal').textContent = data.stats.totalNotes;
-  } catch (_) {}
+  } catch (e) { console.warn('[UI] pollStats failed:', e); }
 }
 
 async function initVault() {

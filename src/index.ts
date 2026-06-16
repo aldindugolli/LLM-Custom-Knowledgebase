@@ -41,7 +41,9 @@ function getChatConfig(): ChatConfig {
     try {
       const raw = fs.readFileSync(cfgPath, "utf-8");
       return JSON.parse(raw);
-    } catch {}
+    } catch (e) {
+      console.warn("[Hermes] Failed to parse brainstorm.json, using defaults:", e);
+    }
   }
   return {
     mode: "ollama",
@@ -132,8 +134,14 @@ const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"),
     };
   });
 
-  scheduler.start(parseInt(process.env.HERMES_MINING_INTERVAL || "300000", 10));
-  console.log(`[Hermes] Auto-mining started (interval: ${process.env.HERMES_MINING_INTERVAL || "300000"}ms)`);
+  const interval = parseInt(process.env.HERMES_MINING_INTERVAL || "300000", 10);
+  if (isNaN(interval) || interval < 1000) {
+    console.warn(`[Hermes] Invalid HERMES_MINING_INTERVAL "${process.env.HERMES_MINING_INTERVAL}", falling back to 300000ms`);
+    scheduler.start(300000);
+  } else {
+    scheduler.start(interval);
+    console.log(`[Hermes] Auto-mining started (interval: ${interval}ms)`);
+  }
 
   try {
     await app.listen({ port: config.port, host: config.host });

@@ -39,7 +39,7 @@ export function createOpenCodeAdapter(opts: OpenCodeOptions) {
       child.stderr?.on("data", (chunk: Buffer) => {
         const text = chunk.toString();
         buffer += text;
-        onToken(text);
+        console.error("[OpenCode stderr]", text.trim());
       });
 
       child.on("error", (err) => {

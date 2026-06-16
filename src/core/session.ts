@@ -47,7 +47,7 @@ export function createSessionManager(vault: Vault, search: SearchEngine, memory:
 
     activeSessions.set(sessionId, context);
 
-    const title = `${project} — ${new Date().toLocaleDateString()}`;
+    const title = `${project} — ${new Date().toISOString().split("T")[0]}`;
     const sessionContent = sessionTemplate(title, project, goal ? `## Goal\n\n${goal}` : undefined);
     const parsed = matter(sessionContent);
     parsed.data.id = sessionId;

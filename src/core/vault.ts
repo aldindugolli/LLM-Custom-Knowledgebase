@@ -49,7 +49,7 @@ export function createVault(cfg: VaultConfig) {
     await fs.mkdir(path.dirname(fp), { recursive: true });
     await fs.writeFile(fp, content, "utf-8");
     invalidateCache();
-    if (type !== "index") rebuildIndex().catch(() => {});
+    if (type !== "index") rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
     return relativePath(fp);
   }
 
@@ -127,7 +127,7 @@ export function createVault(cfg: VaultConfig) {
     try {
       await fs.unlink(fp);
       invalidateCache();
-      rebuildIndex().catch(() => {});
+      rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
       return true;
     } catch {
       return false;
@@ -137,11 +137,18 @@ export function createVault(cfg: VaultConfig) {
   async function rebuildIndex(): Promise<void> {
     const all = await readAllNotes();
     const types: NoteType[] = ["session", "learning", "decision", "concept", "project", "reference"];
+    const seenTitles = new Set<string>();
     const sections = types
       .map((t) => {
         const items = all
           .filter((n) => n.type === t)
           .sort((a, b) => b.updated.getTime() - a.updated.getTime())
+          .filter((n) => {
+            const key = `${n.title}|${n.path}`;
+            if (seenTitles.has(key)) return false;
+            seenTitles.add(key);
+            return true;
+          })
           .slice(0, 50)
           .map((n) => ({
             title: n.title,

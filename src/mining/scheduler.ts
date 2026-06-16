@@ -9,7 +9,6 @@ export function createMiningScheduler(vault: Vault, miner: MiningEngine) {
   async function runOnce(): Promise<{ mined: number; totalSaved: number }> {
     if (isRunning) return { mined: 0, totalSaved: 0 };
     isRunning = true;
-
     try {
       const allNotes = await vault.readAllNotes();
       const completedSessions = allNotes.filter(
@@ -27,6 +26,7 @@ export function createMiningScheduler(vault: Vault, miner: MiningEngine) {
             const parsed = matter(raw.content);
             parsed.data.tags = [...new Set([...(parsed.data.tags || []), "mined"])];
             parsed.data.updated = new Date().toISOString();
+            parsed.data.status = "completed";
             const filename = session.path.split("/").pop() || `${session.id}.md`;
             await vault.writeNote("session", filename, matter.stringify(parsed.content, parsed.data));
           }
@@ -36,6 +36,9 @@ export function createMiningScheduler(vault: Vault, miner: MiningEngine) {
       }
 
       return { mined: completedSessions.length, totalSaved };
+    } catch (e) {
+      console.error("[Hermes] Mining scheduler runOnce failed:", e);
+      return { mined: 0, totalSaved: 0 };
     } finally {
       isRunning = false;
     }

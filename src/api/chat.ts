@@ -25,7 +25,9 @@ export function registerChatRoutes(
       if (sessionId && userMessage && assistantMessage) {
         try {
           await sessions.appendChatExchange(sessionId, userMessage, assistantMessage);
-        } catch {}
+        } catch (e) {
+          console.error("[Chat] Failed to persist exchange:", e);
+        }
       }
     };
 
@@ -64,16 +66,18 @@ export function registerChatRoutes(
     };
 
     const onDone = () => {
-      if (lastUserMsg) persist(lastUserMsg.content, fullResponse).catch(() => {});
-      try { reply.raw.write(`data: ${JSON.stringify({ done: true })}\n\n`); } catch {}
-      try { reply.raw.end(); } catch {}
+      if (lastUserMsg) persist(lastUserMsg.content, fullResponse).catch((e) => console.error("[Chat] Persist failed:", e));
+      try { reply.raw.write(`data: ${JSON.stringify({ done: true })}\n\n`); } catch (e) { console.error("[Chat] SSE write (done) failed:", e); }
+      try { reply.raw.end(); } catch (e) { console.error("[Chat] SSE end failed:", e); }
     };
 
     const onError = (err: Error) => {
       try {
         reply.raw.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
         reply.raw.end();
-      } catch {}
+      } catch (e) {
+        console.error("[Chat] SSE error write failed:", e);
+      }
     };
 
     req.raw.on("close", () => {
