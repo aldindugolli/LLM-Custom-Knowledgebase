@@ -1,0 +1,32 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "brainstorm": {
+      "mode": "primary",
+      "description": "Coding agent with persistent Obsidian memory — Claude merged with Hermes. Auto-injects context, auto-mines learnings.",
+      "prompt": ".opencode/agents/brainstorm.md",
+      "temperature": 0.5,
+      "color": "#6C5CE7"
+    }
+  },
+  "plugin": [".opencode/plugins/hermes-brain.ts"],
+  "command": {
+    "brainstorm": {
+      "description": "Reload Hermes memory context",
+      "template": "{file:.opencode/commands/brainstorm.md}\n\n$ARGUMENTS"
+    }
+  },
+  "instructions": ["AGENTS.md", ".opencode/skills/memory-management/SKILL.md"],
+  "env": {
+    "HERMES_URL": "http://127.0.0.1:3412"
+  },
+  "permission": {
+    "skill": { "*": "allow" },
+    "hermes-save": "allow",
+    "hermes-search": "allow",
+    "hermes-read": "allow",
+    "hermes-session-start": "allow",
+    "hermes-session-end": "allow",
+    "hermes-health": "allow"
+  }
+}

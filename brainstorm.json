@@ -1,0 +1,12 @@
+{
+  "mode": "ollama",
+  "ollama": {
+    "endpoint": "http://127.0.0.1:11434",
+    "defaultModel": "arrodes",
+    "models": ["arrodes", "tinyllama:latest", "llama3.2:3b"]
+  },
+  "opencode": {
+    "command": "opencode",
+    "agent": "brainstorm"
+  }
+}
