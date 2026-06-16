@@ -78,10 +78,13 @@ async function main() {
   const llmRouter = createLLMRouter({ config: chatConfig, cwd: process.cwd() });
   const ctxInjector = createContextInjector({ vault, search });
 
+  await vault.rebuildIndex();
+
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"));
 
   registerMemoryRoutes(app, memory);
   registerSessionRoutes(app, sessions);
@@ -101,9 +104,13 @@ async function main() {
     return reply.redirect("/ui/");
   });
 
+  app.get("/favicon.ico", async (_req, reply) => {
+    return reply.redirect("/ui/favicon.svg");
+  });
+
   app.get("/", async () => ({
     service: "brainstorm",
-    version: "0.3.0",
+    version: pkg.version,
     vault: config.path,
     status: "running",
     chatMode: chatConfig.mode,

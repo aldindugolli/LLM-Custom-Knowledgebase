@@ -3,6 +3,7 @@ import path from "node:path";
 import { glob } from "node:fs/promises";
 import matter from "gray-matter";
 import type { Note, NoteType, NoteFrontmatter, VaultConfig } from "../types.js";
+import { indexTemplate } from "./templates.js";
 
 const NOTE_DIRS: Record<NoteType, string> = {
   session: "sessions",
@@ -48,6 +49,7 @@ export function createVault(cfg: VaultConfig) {
     await fs.mkdir(path.dirname(fp), { recursive: true });
     await fs.writeFile(fp, content, "utf-8");
     invalidateCache();
+    if (type !== "index") rebuildIndex().catch(() => {});
     return relativePath(fp);
   }
 
@@ -125,10 +127,33 @@ export function createVault(cfg: VaultConfig) {
     try {
       await fs.unlink(fp);
       invalidateCache();
+      rebuildIndex().catch(() => {});
       return true;
     } catch {
       return false;
     }
+  }
+
+  async function rebuildIndex(): Promise<void> {
+    const all = await readAllNotes();
+    const types: NoteType[] = ["session", "learning", "decision", "concept", "project", "reference"];
+    const sections = types
+      .map((t) => {
+        const items = all
+          .filter((n) => n.type === t)
+          .sort((a, b) => b.updated.getTime() - a.updated.getTime())
+          .slice(0, 50)
+          .map((n) => ({
+            title: n.title,
+            path: n.path,
+            summary: n.body.slice(0, 100).replace(/\n/g, " "),
+          }));
+        return items.length > 0 ? { heading: `${t.charAt(0).toUpperCase() + t.slice(1)}s`, items } : null;
+      })
+      .filter(Boolean) as { heading: string; items: { title: string; path: string; summary: string }[] }[];
+    const content = indexTemplate(sections);
+    const fp = path.join(vaultPath, "index.md");
+    await fs.writeFile(fp, content, "utf-8");
   }
 
   async function resolveWikilinks(note: Note, allNotes: Note[]): Promise<Note> {
@@ -166,6 +191,7 @@ export function createVault(cfg: VaultConfig) {
     deleteNote,
     resolveWikilinks,
     getVaultPath,
+    rebuildIndex,
   };
 }
 
