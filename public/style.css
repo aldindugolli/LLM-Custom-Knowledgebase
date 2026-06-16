@@ -164,3 +164,5 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);overflow:hid
   .vault-grid{grid-template-columns:1fr}
   .health-grid{grid-template-columns:repeat(2,1fr)}
 }
+.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;display:inline-block;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}

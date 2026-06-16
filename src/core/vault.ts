@@ -20,6 +20,7 @@ const CACHE_TTL = 5000;
 export function createVault(cfg: VaultConfig) {
   const vaultPath = path.resolve(cfg.path);
   let cache: { timestamp: number; notes: Note[] } | null = null;
+  let writeLock: Promise<void> = Promise.resolve();
 
   function invalidateCache() {
     cache = null;
@@ -46,10 +47,15 @@ export function createVault(cfg: VaultConfig) {
 
   async function writeNote(type: NoteType, filename: string, content: string): Promise<string> {
     const fp = notePath(type, filename);
-    await fs.mkdir(path.dirname(fp), { recursive: true });
-    await fs.writeFile(fp, content, "utf-8");
-    invalidateCache();
-    if (type !== "index") rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
+    const prev = writeLock;
+    writeLock = (async () => {
+      await prev;
+      await fs.mkdir(path.dirname(fp), { recursive: true });
+      await fs.writeFile(fp, content, "utf-8");
+      invalidateCache();
+      if (type !== "index") rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
+    })();
+    await writeLock;
     return relativePath(fp);
   }
 
@@ -124,14 +130,18 @@ export function createVault(cfg: VaultConfig) {
 
   async function deleteNote(filepath: string): Promise<boolean> {
     const fp = path.resolve(vaultPath, filepath);
-    try {
-      await fs.unlink(fp);
-      invalidateCache();
-      rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
-      return true;
-    } catch {
-      return false;
-    }
+    const prev = writeLock;
+    writeLock = (async () => {
+      await prev;
+      try {
+        await fs.unlink(fp);
+        invalidateCache();
+        rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
+      } catch {
+        throw false;
+      }
+    })();
+    try { await writeLock; return true; } catch { return false; }
   }
 
   async function rebuildIndex(): Promise<void> {

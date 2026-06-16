@@ -11,13 +11,35 @@ export function registerChatRoutes(
   sessions: SessionManager,
   config: ChatConfig
 ) {
-  app.post<{ Body: ChatRequest }>("/chat/completions", async (req, reply) => {
+  app.post<{ Body: ChatRequest }>("/chat/completions", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["messages"],
+        properties: {
+          messages: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              required: ["role", "content"],
+              properties: {
+                role: { type: "string", enum: ["system", "user", "assistant"] },
+                content: { type: "string" },
+              },
+            },
+          },
+          mode: { type: "string", enum: ["ollama", "opencode"] },
+          model: { type: "string" },
+          sessionId: { type: "string" },
+          stream: { type: "boolean" },
+          temperature: { type: "number", minimum: 0, maximum: 2 },
+        },
+      },
+    },
+  }, async (req, reply) => {
     const { messages, mode, model, sessionId, stream, temperature } = req.body;
     const chatMode = mode || config.mode;
-
-    if (!messages || messages.length === 0) {
-      return { ok: false, error: "No messages provided" };
-    }
 
     const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
 

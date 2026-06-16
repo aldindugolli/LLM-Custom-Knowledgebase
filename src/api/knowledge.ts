@@ -13,6 +13,18 @@ export function registerKnowledgeRoutes(app: FastifyInstance, dedup: DedupEngine
 
   app.post<{ Body: { primaryId: string; duplicateIds: string[] } }>(
     "/knowledge/dedup/merge-preview",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["primaryId"],
+          properties: {
+            primaryId: { type: "string", minLength: 1 },
+            duplicateIds: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+    },
     async (req) => {
       const { primaryId, duplicateIds } = req.body;
       if (duplicateIds && duplicateIds.length > 0) {

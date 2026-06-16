@@ -277,17 +277,27 @@ async function newSession() {
 }
 window.newSession = newSession;
 
-function showToast(text) {
+function showToast(text, isError) {
   const el = document.createElement('div');
-  el.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#21252b;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:12px 18px;font-size:13px;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,0.4)';
+  el.style.cssText = `position:fixed;bottom:20px;right:20px;background:${isError ? '#3d1f1f' : '#21252b'};border:1px solid ${isError ? 'rgba(255,80,80,0.2)' : 'rgba(255,255,255,0.06)'};border-radius:10px;padding:12px 18px;font-size:13px;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,0.4)`;
   el.textContent = text;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 3000);
 }
 
+function showLoading(el, loading) {
+  if (loading) {
+    el.dataset.prevHtml = el.innerHTML;
+    el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text3)"><div class="spinner"></div><div style="margin-top:8px;font-size:12px">Loading...</div></div>';
+  } else if (el.dataset.prevHtml) {
+    el.innerHTML = el.dataset.prevHtml;
+    delete el.dataset.prevHtml;
+  }
+}
+
 async function initOverview() {
   const data = await api('/vault/stats');
-  if (!data.ok) return;
+  if (!data.ok) { showToast('Failed to load vault stats', true); return; }
   const s = data.stats;
   document.getElementById('stTotal').textContent = s.totalNotes;
   document.getElementById('stLearnings').textContent = s.byType.learning || 0;
@@ -351,6 +361,7 @@ async function initVault() {
   async function load() {
     const type = typeEl.value;
     const filter = searchEl.value.toLowerCase().trim();
+    showLoading(grid, true);
 
     let notes;
     if (type === 'all') {
@@ -372,6 +383,8 @@ async function initVault() {
       );
     }
 
+    showLoading(grid, false);
+
     if (notes.length === 0) {
       grid.innerHTML = '<p style="color:var(--text3);font-size:13px;padding:16px 0">No notes found</p>';
       return;
@@ -391,6 +404,7 @@ async function initGraph() {
   const hideOrphans = document.getElementById('hideOrphans');
 
   async function draw() {
+    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#5f6368" font-size="13">Loading graph...</text>';
     const data = await api('/knowledge/graph');
     let nodes = data.ok ? data.nodes : [];
     let edges = data.ok ? data.edges : [];
@@ -510,29 +524,38 @@ function initModal() {
 async function showNote(id) {
   const modal = document.getElementById('noteModal');
   modal.style.display = 'flex';
-  document.getElementById('modalTitle').textContent = 'Loading...';
-  document.getElementById('modalBody').textContent = '';
-  document.getElementById('modalMeta').textContent = '';
-  document.getElementById('modalBreadcrumb').textContent = '';
+  const titleEl = document.getElementById('modalTitle');
+  const bodyEl = document.getElementById('modalBody');
+  const metaEl = document.getElementById('modalMeta');
+  const breadcrumbEl = document.getElementById('modalBreadcrumb');
+  titleEl.textContent = 'Loading...';
+  bodyEl.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+  metaEl.textContent = '';
+  breadcrumbEl.textContent = '';
 
-  const data = await api(`/memory/read?id=${encodeURIComponent(id)}`);
-  if (!data.ok || !data.note) {
-    document.getElementById('modalTitle').textContent = 'Not found';
-    document.getElementById('modalBody').textContent = 'This note could not be found.';
-    return;
+  try {
+    const data = await api(`/memory/read?id=${encodeURIComponent(id)}`);
+    if (!data.ok || !data.note) {
+      titleEl.textContent = 'Not found';
+      bodyEl.textContent = 'This note could not be found.';
+      return;
+    }
+    const n = data.note;
+    titleEl.textContent = n.title;
+    breadcrumbEl.textContent = `vault/${n.path}`;
+    metaEl.innerHTML = [
+      `<span class="type-badge type-${n.type}">${n.type}</span>`,
+      new Date(n.updated).toLocaleString(),
+      n.frontmatter?.project ? `Project: ${esc(n.frontmatter.project)}` : '',
+      `${n.wordCount} words`,
+      n.tags?.length ? `Tags: ${n.tags.join(', ')}` : '',
+    ].filter(Boolean).join(' \u00B7 ');
+    bodyEl.innerHTML = `<div>${esc(n.body || n.content || '')}</div>`;
+  } catch (e) {
+    titleEl.textContent = 'Error';
+    bodyEl.textContent = `Failed to load note: ${e.message}`;
+    showToast('Failed to load note', true);
   }
-  const n = data.note;
-  document.getElementById('modalTitle').textContent = n.title;
-  document.getElementById('modalBreadcrumb').textContent = `vault/${n.path}`;
-  document.getElementById('modalMeta').innerHTML = [
-    `<span class="type-badge type-${n.type}">${n.type}</span>`,
-    new Date(n.updated).toLocaleString(),
-    n.frontmatter?.project ? `Project: ${esc(n.frontmatter.project)}` : '',
-    `${n.wordCount} words`,
-    n.tags?.length ? `Tags: ${n.tags.join(', ')}` : '',
-  ].filter(Boolean).join(' \u00B7 ');
-
-  document.getElementById('modalBody').innerHTML = `<div>${esc(n.body || n.content || '')}</div>`;
 }
 window.showNote = showNote;
 
