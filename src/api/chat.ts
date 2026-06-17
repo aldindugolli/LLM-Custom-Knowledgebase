@@ -73,7 +73,10 @@ export function registerChatRoutes(
         return ["jpg", "jpeg", "png", "gif", "webp", "pdf"].includes(ext);
       });
       const parsed = await Promise.all(
-        files.map((f) => parseFile(f.name, f.content, f.encoding, needsOcr).catch(() => null))
+        files.map((f) => parseFile(f.name, f.content, f.encoding, needsOcr).catch((e: any) => {
+          console.error(`[Chat] parseFile failed for ${f.name}: ${e?.message ?? e}`);
+          return null;
+        }))
       );
       const textFiles = parsed.filter((p): p is NonNullable<typeof p> => p !== null && p.type !== "image");
       const imageFiles = parsed.filter((p): p is NonNullable<typeof p> => p !== null && p.type === "image");

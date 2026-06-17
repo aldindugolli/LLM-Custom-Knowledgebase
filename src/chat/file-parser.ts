@@ -170,10 +170,18 @@ export async function parseFile(fileName: string, content: string | Buffer, enco
   }
 
   if (ext === "pdf") {
-    let text = await parsePdf(buffer);
+    let text: string;
+    try {
+      text = await parsePdf(buffer);
+    } catch (e: any) {
+      console.error(`[PDF] parsePdf failed for ${fileName}: ${e?.message ?? e}`);
+      text = "";
+    }
     if (ocr && text.replace(/\[Page \d+\]/g, "").trim().length < 5) {
       console.log(`[OCR] PDF text too short (${text.length} chars), falling back to render+OCR`);
       text = await ocrPdf(buffer);
+    } else if (text.length === 0 && !ocr) {
+      text = "(unable to extract text from this PDF)";
     }
     return { name: fileName, text, raw: buffer, type: "pdf" };
   }
