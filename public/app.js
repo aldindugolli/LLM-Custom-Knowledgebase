@@ -4,6 +4,9 @@ let currentChatMode = 'ollama';
 let currentModel = 'llama3.2:3b';
 let isStreaming = false;
 let abortController = null;
+let currentNoteId = null;
+let attachedFiles = [];
+let storedExcelFile = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   initStatus();
@@ -13,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initVault();
   initGraph();
   initHealth();
+  initModels();
   initModal();
   let pollTimer = setInterval(pollStats, 15000);
   document.addEventListener('visibilitychange', () => {
@@ -49,7 +53,7 @@ async function initStatus() {
   const text = document.getElementById('statusText');
   const badge = document.getElementById('chatModeBadge');
   try {
-    const data = await api('/');
+    const data = await api('/api');
     if (data.status === 'running') {
       dot.style.background = 'var(--green)';
       text.textContent = 'Connected';
@@ -92,6 +96,146 @@ async function loadModels() {
   } catch (e) { console.warn('[UI] loadModels failed:', e); }
 }
 
+function isBinaryFile(name) {
+  const ext = name.toLowerCase().split('.').pop();
+  return ext === 'pdf' || ext === 'xlsx' || ext === 'xls';
+}
+
+function mimeTypeFor(name) {
+  const ext = name.toLowerCase().split('.').pop();
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'xlsx' || ext === 'xls') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  return 'text/plain';
+}
+
+function bufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function onFileSelect() {
+  const input = document.getElementById('chatFileInput');
+  for (const file of input.files) {
+    const isBinary = isBinaryFile(file.name);
+    const content = isBinary ? bufferToBase64(await file.arrayBuffer()) : await file.text();
+    attachedFiles.push({
+      name: file.name,
+      content,
+      size: file.size,
+      mimeType: mimeTypeFor(file.name),
+      encoding: isBinary ? 'base64' : undefined,
+    });
+    if (isBinary && (file.name.endsWith('.xlsx') || file.name.endsWith('.xls'))) {
+      storedExcelFile = { name: file.name, content };
+      document.getElementById('applyExcelBtn').style.display = 'inline-block';
+      document.getElementById('autoFillExcelBtn').style.display = 'inline-block';
+    }
+  }
+  input.value = '';
+  renderFileChips();
+}
+window.onFileSelect = onFileSelect;
+
+function removeFile(index) {
+  attachedFiles.splice(index, 1);
+  renderFileChips();
+}
+window.removeFile = removeFile;
+
+function renderFileChips() {
+  const chips = document.getElementById('chatFileChips');
+  if (attachedFiles.length === 0) {
+    chips.innerHTML = '';
+    chips.classList.remove('has-files');
+    return;
+  }
+  chips.classList.add('has-files');
+  chips.innerHTML = attachedFiles.map((f, i) =>
+    `<span class="file-chip">${esc(f.name)} (${formatSize(f.size)}) <button class="file-chip-remove" onclick="removeFile(${i})">&times;</button></span>`
+  ).join('');
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + 'B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + 'KB';
+  return (bytes / 1048576).toFixed(1) + 'MB';
+}
+
+async function applyExcelEdits() {
+  if (!storedExcelFile) { showToast('No Excel file attached', true); return; }
+  const jsonStr = prompt('Enter cell edits as JSON array, e.g. [{"cell":"A1","value":"hello"}]:');
+  if (!jsonStr) return;
+  let edits;
+  try { edits = JSON.parse(jsonStr); } catch { showToast('Invalid JSON', true); return; }
+  try {
+    const res = await fetch(`${API}/chat/apply-excel-edits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: storedExcelFile, edits }),
+    });
+    if (!res.ok) { showToast('Failed to apply edits', true); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = storedExcelFile.name;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Excel saved!');
+  } catch (e) { showToast('Error: ' + e.message, true); }
+}
+window.applyExcelEdits = applyExcelEdits;
+
+async function autoFillExcel() {
+  if (!storedExcelFile) { showToast('No Excel file attached', true); return; }
+  const input = document.getElementById('chatInput');
+  const prompt = input.value.trim() || 'Fill the Excel template according to the attached reference files';
+  const btn = document.getElementById('autoFillExcelBtn');
+  btn.disabled = true;
+  btn.textContent = 'Filling...';
+  try {
+    const allFiles = [{ name: storedExcelFile.name, content: storedExcelFile.content, encoding: 'base64' }];
+    const chips = document.getElementById('chatFileChips');
+    const fileInput = document.getElementById('chatFileInput');
+    for (const f of attachedFiles) {
+      allFiles.push({ name: f.name, content: f.content, encoding: f.encoding });
+    }
+    const res = await fetch(`${API}/chat/fill-excel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, files: allFiles }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(err.error || 'Auto-fill failed', true);
+      if (err.llmResponse) {
+        const msgs = document.getElementById('chatMessages');
+        const div = document.createElement('div');
+        div.className = 'msg msg-assistant msg-error';
+        div.innerHTML = `<div class="msg-content"><p>LLM raw response (could not parse edits):</p><pre style="font-size:11px;white-space:pre-wrap">${esc(JSON.stringify(err.llmResponse, null, 2))}</pre></div>`;
+        msgs.appendChild(div);
+      }
+      return;
+    }
+    const blob = await res.blob();
+    const editCount = res.headers.get('X-Edit-Count') || '?';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = storedExcelFile.name;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Excel saved — ${editCount} edits applied`);
+  } catch (e) { showToast('Error: ' + e.message, true); }
+  finally {
+    btn.disabled = false;
+    btn.textContent = 'Auto-Fill Excel';
+  }
+}
+window.autoFillExcel = autoFillExcel;
+
 async function initChat() {
   const input = document.getElementById('chatInput');
   const btn = document.getElementById('chatSendBtn');
@@ -124,7 +268,11 @@ async function initChat() {
 
     const userDiv = document.createElement('div');
     userDiv.className = 'msg msg-user';
-    userDiv.innerHTML = `<div class="msg-content"><p>${esc(q)}</p></div>`;
+    let userHtml = `<div class="msg-content"><p>${esc(q)}</p></div>`;
+    if (attachedFiles.length > 0) {
+      userHtml += `<div class="msg-attachments">${attachedFiles.map(f => `<span class="file-chip">${esc(f.name)} (${formatSize(f.size)})</span>`).join('')}</div>`;
+    }
+    userDiv.innerHTML = userHtml;
     messages.appendChild(userDiv);
 
     const labelDiv = document.createElement('div');
@@ -145,6 +293,15 @@ async function initChat() {
     btn.disabled = true;
     abortController = new AbortController();
 
+    const filesPayload = attachedFiles.map(f => ({
+      name: f.name,
+      content: f.content,
+      mimeType: f.mimeType,
+      encoding: f.encoding,
+    }));
+    attachedFiles = [];
+    renderFileChips();
+
     try {
       const response = await fetch(`${API}/chat/completions`, {
         method: 'POST',
@@ -155,6 +312,7 @@ async function initChat() {
           model: currentModel,
           sessionId: currentSessionId,
           stream: true,
+          files: filesPayload.length > 0 ? filesPayload : undefined,
         }),
         signal: abortController.signal,
       });
@@ -358,20 +516,26 @@ async function initVault() {
   const searchEl = document.getElementById('browserSearch');
   const grid = document.getElementById('vaultGrid');
 
+  let vaultPage = 0;
+  const pageSize = 40;
+
   async function load() {
     const type = typeEl.value;
     const filter = searchEl.value.toLowerCase().trim();
     showLoading(grid, true);
 
     let notes;
+    let total;
     if (type === 'all') {
       const promises = ['learning', 'decision', 'concept', 'session', 'project'].map(t =>
-        api(`/memory/list?type=${t}`).then(r => r.ok ? r.notes : [])
+        api(`/memory/list?type=${t}&limit=${pageSize}&offset=${vaultPage * pageSize}`).then(r => r.ok ? r.notes : [])
       );
       notes = (await Promise.all(promises)).flat();
+      total = notes.length;
     } else {
-      const data = await api(`/memory/list?type=${type}`);
+      const data = await api(`/memory/list?type=${type}&limit=${pageSize}&offset=${vaultPage * pageSize}`);
       notes = data.ok ? data.notes : [];
+      total = data.total || notes.length;
     }
 
     notes.sort((a, b) => new Date(b.updated) - new Date(a.updated));
@@ -400,63 +564,151 @@ async function initVault() {
 }
 
 async function initGraph() {
-  const svg = document.getElementById('graphSvg');
+  const svgEl = document.getElementById('graphSvg');
   const hideOrphans = document.getElementById('hideOrphans');
+  let sim = null;
 
   async function draw() {
-    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#5f6368" font-size="13">Loading graph...</text>';
+    svgEl.innerHTML = '';
+    document.getElementById('graphNodeCount').textContent = '0';
+    document.getElementById('graphEdgeCount').textContent = '0';
+
+    if (sim) {
+      sim.stop();
+      sim = null;
+    }
+
     const data = await api('/knowledge/graph');
-    let nodes = data.ok ? data.nodes : [];
-    let edges = data.ok ? data.edges : [];
+    let nodes = data.ok ? data.nodes.slice() : [];
+    let edges = data.ok ? data.edges.slice() : [];
 
     document.getElementById('graphNodeCount').textContent = nodes.length;
     document.getElementById('graphEdgeCount').textContent = edges.length;
 
     if (nodes.length === 0) {
-      svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#5f6368" font-size="13">No connections yet</text>';
+      svgEl.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#5f6368" font-size="13">No connections yet</text>';
       return;
     }
 
-    const width = svg.clientWidth || 800;
-    const height = 460;
     let orphans = [];
     if (hideOrphans.checked) {
       const h = await api('/health/report');
       if (h.ok) orphans = h.report.orphans.map(o => o.path);
     }
 
-    const cx = width / 2, cy = height / 2;
-    const radius = Math.min(width, height) / 2 - 60;
-    const angles = {};
-    nodes.forEach((n, i) => { angles[n.id] = (2 * Math.PI * i) / nodes.length; });
-    const pos = {};
-    nodes.forEach(n => {
-      const a = angles[n.id];
-      pos[n.id] = { x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) };
+    const width = svgEl.clientWidth || 800;
+    const height = 520;
+
+    const svg = d3.select('#graphSvg');
+    svg.selectAll('*').remove();
+
+    const zoom = d3.zoom()
+      .scaleExtent([0.2, 4])
+      .on('zoom', (event) => g.attr('transform', event.transform));
+
+    svg.call(zoom);
+
+    const g = svg.append('g');
+
+    const orphanPaths = new Set(orphans);
+    const visibleNodes = nodes.filter(n => n.type !== 'index');
+    const filteredNodeIds = new Set(
+      hideOrphans.checked
+        ? visibleNodes.filter(n => !orphanPaths.has(n.path)).map(n => n.id)
+        : visibleNodes.map(n => n.id)
+    );
+
+    const filteredEdges = edges.filter(e =>
+      filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target)
+    );
+
+    const linkData = filteredEdges.map(e => ({
+      source: e.source,
+      target: e.target,
+      kind: e.kind,
+    }));
+    const nodeData = visibleNodes.filter(n => filteredNodeIds.has(n.id));
+
+    sim = d3.forceSimulation(nodeData)
+      .force('link', d3.forceLink(linkData).id(d => d.id).distance(120))
+      .force('charge', d3.forceManyBody().strength(-250))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide().radius(25))
+      .alphaDecay(0.02);
+
+    const link = g.append('g')
+      .selectAll('line')
+      .data(linkData)
+      .join('line')
+      .attr('class', d => `link link-${d.kind}`);
+
+    const node = g.append('g')
+      .selectAll('g')
+      .data(nodeData)
+      .join('g')
+      .attr('class', d => `node node-${d.type}`)
+      .attr('data-id', d => d.id)
+      .call(d3.drag()
+        .on('start', (event, d) => {
+          if (!event.active) sim.alphaTarget(0.3).restart();
+          d.fx = d.x;
+          d.fy = d.y;
+        })
+        .on('drag', (event, d) => {
+          d.fx = event.x;
+          d.fy = event.y;
+        })
+        .on('end', (event, d) => {
+          if (!event.active) sim.alphaTarget(0);
+          d.fx = null;
+          d.fy = null;
+        })
+      );
+
+    node.append('circle')
+      .attr('r', 6);
+
+    node.append('text')
+      .text(d => (d.title || '?').slice(0, 22))
+      .attr('x', 10)
+      .attr('y', 4);
+
+    node.on('mouseenter', function (event, d) {
+      const connected = new Set();
+      connected.add(d.id);
+      for (const e of filteredEdges) {
+        if (e.source === d.id) connected.add(e.target);
+        if (e.target === d.id) connected.add(e.source);
+      }
+      node.attr('class', n => `node node-${n.type}${connected.has(n.id) ? '' : ' node-dimmed'}`);
+      link.attr('class', e => {
+        const cls = `link link-${e.kind}`;
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        return src === d.id || tgt === d.id ? cls : `${cls} link-dimmed`;
+      });
     });
 
-    let html = '';
-    for (const e of edges) {
-      const s = pos[e.source], t = pos[e.target];
-      if (s && t) html += `<line class="${e.kind === 'tag' ? 'link-tag' : 'link'}" x1="${s.x}" y1="${s.y}" x2="${t.x}" y2="${t.y}" />`;
-    }
-
-    const filtered = hideOrphans.checked ? nodes.filter(n => !orphans.some(o => n.path?.includes(o))) : nodes;
-    for (const n of filtered) {
-      const p = pos[n.id];
-      if (!p) continue;
-      html += `<g class="node node-${n.type}" data-id="${esc(n.id)}">
-        <circle cx="${p.x}" cy="${p.y}" r="5" />
-        <text x="${p.x + 9}" y="${p.y + 3}">${esc((n.title || '?').slice(0, 22))}</text>
-      </g>`;
-    }
-
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    svg.innerHTML = html;
-    svg.querySelectorAll('.node').forEach(g => {
-      g.addEventListener('click', () => showNote(g.dataset.id));
-      g.style.cursor = 'pointer';
+    node.on('mouseleave', function () {
+      node.attr('class', n => `node node-${n.type}`);
+      link.attr('class', e => `link link-${e.kind}`);
     });
+
+    node.on('click', function (event, d) {
+      if (event.defaultPrevented) return;
+      showNote(d.id);
+    });
+
+    sim.on('tick', () => {
+      link
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+    svg.call(zoom.transform, d3.zoomIdentity.translate(0, 0).scale(1));
   }
 
   hideOrphans.addEventListener('change', draw);
@@ -524,10 +776,15 @@ function initModal() {
 async function showNote(id) {
   const modal = document.getElementById('noteModal');
   modal.style.display = 'flex';
+  currentNoteId = id;
   const titleEl = document.getElementById('modalTitle');
   const bodyEl = document.getElementById('modalBody');
   const metaEl = document.getElementById('modalMeta');
   const breadcrumbEl = document.getElementById('modalBreadcrumb');
+  const editBtn = document.getElementById('modalEditBtn');
+  const deleteBtn = document.getElementById('modalDeleteBtn');
+  editBtn.style.display = '';
+  deleteBtn.style.display = '';
   titleEl.textContent = 'Loading...';
   bodyEl.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
   metaEl.textContent = '';
@@ -558,6 +815,219 @@ async function showNote(id) {
   }
 }
 window.showNote = showNote;
+
+function showNewNoteForm() {
+  document.getElementById('newNoteForm').style.display = 'block';
+  document.getElementById('newNoteTitle').focus();
+  document.getElementById('newNoteBody').value = '';
+  document.getElementById('newNoteTitle').value = '';
+  document.getElementById('newNoteProject').value = '';
+}
+window.showNewNoteForm = showNewNoteForm;
+
+function cancelNewNote() {
+  document.getElementById('newNoteForm').style.display = 'none';
+}
+window.cancelNewNote = cancelNewNote;
+
+async function saveNewNote() {
+  const type = document.getElementById('newNoteType').value;
+  const title = document.getElementById('newNoteTitle').value.trim();
+  const body = document.getElementById('newNoteBody').value.trim();
+  const project = document.getElementById('newNoteProject').value.trim() || undefined;
+
+  if (!title || !body) {
+    showToast('Title and body are required', true);
+    return;
+  }
+
+  const data = await api('/memory/save', {
+    method: 'POST',
+    body: { type, title, body, project },
+  });
+
+  if (data.ok) {
+    showToast('Note saved');
+    document.getElementById('newNoteForm').style.display = 'none';
+    initVault();
+    if (data.note) showNote(data.note.id);
+  } else {
+    showToast(data.error || 'Failed to save note', true);
+  }
+}
+window.saveNewNote = saveNewNote;
+
+function editNote() {
+  const modal = document.getElementById('noteModal');
+  const bodyEl = document.getElementById('modalBody');
+  const textarea = document.createElement('textarea');
+  textarea.id = 'editTextarea';
+  textarea.style.cssText = 'width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px;font-size:13px;font-family:var(--font);min-height:200px;resize:vertical;outline:none';
+  textarea.value = bodyEl.textContent;
+  bodyEl.innerHTML = '';
+  bodyEl.appendChild(textarea);
+
+  const btnBar = document.createElement('div');
+  btnBar.style.cssText = 'display:flex;gap:6px;margin-top:8px';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'action-btn';
+  saveBtn.textContent = 'Save';
+  saveBtn.onclick = async () => {
+    const newBody = textarea.value.trim();
+    if (!newBody) { showToast('Body cannot be empty', true); return; }
+    const data = await api('/memory/update', {
+      method: 'PUT',
+      body: { id: currentNoteId, body: newBody },
+    });
+    if (data.ok) {
+      showToast('Note updated');
+      showNote(currentNoteId);
+    } else {
+      showToast(data.error || 'Update failed', true);
+    }
+  };
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'action-btn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'background:var(--bg3);color:var(--text2)';
+  cancelBtn.onclick = () => showNote(currentNoteId);
+  btnBar.appendChild(saveBtn);
+  btnBar.appendChild(cancelBtn);
+  bodyEl.appendChild(btnBar);
+
+  document.getElementById('modalEditBtn').style.display = 'none';
+  document.getElementById('modalDeleteBtn').style.display = 'none';
+}
+window.editNote = editNote;
+
+async function deleteNote() {
+  if (!confirm('Delete this note permanently?')) return;
+  const data = await api(`/memory/delete?id=${encodeURIComponent(currentNoteId)}`);
+  if (data.ok) {
+    showToast('Note deleted');
+    document.getElementById('noteModal').style.display = 'none';
+    initVault();
+  } else {
+    showToast(data.error || 'Delete failed', true);
+  }
+}
+window.deleteNote = deleteNote;
+
+async function initModels() {
+  try {
+    const hw = await api('/ollama/hwinfo');
+    if (hw.ok) {
+      document.getElementById('hwCpu').textContent = hw.hardware.cpu;
+      document.getElementById('hwCores').textContent = hw.hardware.cores;
+      document.getElementById('hwRam').textContent = hw.hardware.ramGB + ' GB';
+      document.getElementById('hwFreeRam').textContent = hw.hardware.freeRamGB + ' GB';
+      document.getElementById('hwGpu').textContent = hw.hardware.gpu || 'None detected';
+      document.getElementById('hwVram').textContent = hw.hardware.vramGB ? hw.hardware.vramGB + ' GB' : 'N/A';
+      document.getElementById('hwDisk').textContent = hw.hardware.diskFreeGB + ' GB';
+      document.getElementById('hwPlatform').textContent = hw.hardware.platform;
+    }
+  } catch (e) { console.warn('[Models] hwinfo failed:', e); }
+
+  const uc = document.getElementById('modelsUseCase');
+  uc.addEventListener('change', recommendModels);
+  document.getElementById('modelsPreferSpeed').addEventListener('change', recommendModels);
+  document.getElementById('modelsMaxRam').addEventListener('input', recommendModels);
+  recommendModels();
+  loadAllModels();
+}
+
+async function recommendModels() {
+  const useCase = document.getElementById('modelsUseCase').value;
+  const preferSpeed = document.getElementById('modelsPreferSpeed').checked;
+  const maxRam = parseInt(document.getElementById('modelsMaxRam').value) || undefined;
+  const results = document.getElementById('modelsResults');
+
+  try {
+    const data = await api('/ollama/recommend', {
+      method: 'POST',
+      body: { useCase, preferSpeed, maxRam },
+    });
+
+    if (!data.ok || !data.recommendations || data.recommendations.length === 0) {
+      results.innerHTML = '<div class="models-empty">No models match your hardware constraints.</div>';
+      return;
+    }
+
+    results.innerHTML = data.recommendations.map((m, i) => {
+      const classes = m.installed ? 'model-row installed' : 'model-row';
+      const top = i === 0 ? ' top' : '';
+      return `<div class="${classes}${top}">
+        <div class="model-name">${esc(m.name)}</div>
+        <div class="model-params">${esc(m.params)}</div>
+        <div class="model-use-case">${esc(m.useCase)}</div>
+        <div class="model-stats">${esc(m.reason)}</div>
+        <div class="model-score">${m.score.toFixed(2)}</div>
+        ${m.installed ? '<span class="model-badge installed">Installed</span>' : '<button class="model-dl-btn" onclick="pullModel(\'' + esc(m.name) + '\')">Download</button>'}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    results.innerHTML = '<div class="models-empty">Failed to fetch recommendations.</div>';
+    console.warn('[Models] recommend failed:', e);
+  }
+}
+window.recommendModels = recommendModels;
+
+async function loadAllModels() {
+  const wrap = document.getElementById('allModelsWrap');
+  try {
+    const data = await api('/ollama/models');
+    if (!data.ok || !data.models) { wrap.innerHTML = '<div class="models-empty">Failed to load models.</div>'; return; }
+
+    wrap.innerHTML = data.models.map(m => {
+      const installed = m.installed ? 'model-row installed' : 'model-row';
+      return `<div class="${installed}">
+        <div class="model-name">${esc(m.name)}</div>
+        <div class="model-params">${esc(m.params)}</div>
+        <div class="model-use-case">${esc(m.useCase)}</div>
+        <div class="model-stats">${m.minRamGB}GB RAM${m.minVramGB ? ' / ' + m.minVramGB + 'GB VRAM' : ''} / ${m.diskGB}GB disk</div>
+        <div style="flex:1"></div>
+        ${m.installed ? '<span class="model-badge installed">Installed</span>' : '<button class="model-dl-btn" onclick="pullModel(\'' + esc(m.name) + '\')">Download</button>'}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = '<div class="models-empty">Failed to load model list.</div>';
+    console.warn('[Models] list failed:', e);
+  }
+}
+window.loadAllModels = loadAllModels;
+
+async function pullModel(name) {
+  if (!confirm('Download ' + name + '? (may be large — check disk space)')) return;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Downloading...';
+  try {
+    const data = await api('/ollama/pull', { method: 'POST', body: { model: name } });
+    if (data.ok) {
+      showToast('Downloaded ' + name);
+      btn.textContent = 'Installed';
+      btn.style.opacity = '0.5';
+      btn.disabled = true;
+      recommendModels();
+      loadAllModels();
+    } else {
+      showToast(data.error || 'Download failed', true);
+      btn.disabled = false;
+      btn.textContent = 'Retry';
+    }
+  } catch (e) {
+    showToast('Download error: ' + e.message, true);
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+  }
+}
+window.pullModel = pullModel;
+
+async function refreshModels() {
+  recommendModels();
+  loadAllModels();
+}
+window.refreshModels = refreshModels;
 
 function esc(s) {
   if (typeof s !== 'string') return '';
