@@ -19,6 +19,8 @@ export function createContextInjector(opts: ContextInjectorOptions) {
     `You are Brainstorm, a coding agent with persistent memory.`,
     `You retain access to session history and a knowledge vault.`,
     `Use the provided context to answer questions and reference past learnings when relevant.`,
+    ``,
+    `When describing file or note content, report ONLY what is literally present in the text. Never invent, infer, or fabricate metadata about sessions, conversations, tools, or agent names. If the file does not mention sessions, conversations, or Brainstorm, do not claim it does.`,
   ].join("\n");
 
   async function inject(
