@@ -8,11 +8,7 @@ export interface LinkSuggestion {
   confidence: "high" | "medium" | "low";
 }
 
-const LINK_KEYWORDS: Record<string, string[]> = {
-  concept: ["is a", "is like", "similar to", "related to", "built on", "extends", "derives from"],
-  decision: ["decided to", "chose", "opted for", "because"],
-  reference: ["see also", "as described in", "per"],
-};
+const LINK_PATTERNS = ["is a", "is like", "similar to", "related to", "built on", "extends", "derives from", "decided to", "chose", "opted for", "see also", "as described in"];
 
 export function createLinkSuggester(vault: Vault) {
   async function suggestLinks(allNotes?: Note[]): Promise<LinkSuggestion[]> {
@@ -49,16 +45,14 @@ export function createLinkSuggester(vault: Vault) {
           });
         }
 
-        for (const [type, keywords] of Object.entries(LINK_KEYWORDS)) {
-          for (const kw of keywords) {
-            if (note.type === type && bodyLower.includes(`${kw} ${targetTitle}`)) {
-              suggestions.push({
-                source: note,
-                target: candidate,
-                reason: `"${kw} ${candidate.title}" pattern match`,
-                confidence: "high",
-              });
-            }
+        for (const pattern of LINK_PATTERNS) {
+          if (bodyLower.includes(`${pattern} ${targetTitle}`)) {
+            suggestions.push({
+              source: note,
+              target: candidate,
+              reason: `"${pattern} ${candidate.title}" pattern match`,
+              confidence: "high",
+            });
           }
         }
       }

@@ -1,4 +1,4 @@
-export type NoteType = "session" | "learning" | "decision" | "concept" | "project" | "reference" | "index";
+export type NoteType = "session" | "learning" | "decision" | "concept" | "project" | "reference" | "index" | "entity" | "task" | "reflection";
 
 export interface NoteFrontmatter {
   id: string;
@@ -12,6 +12,10 @@ export interface NoteFrontmatter {
   project?: string;
   importance?: 1 | 2 | 3 | 4 | 5;
   status?: "draft" | "active" | "archived";
+  entityType?: EntityType;
+  priority?: "low" | "medium" | "high" | "critical";
+  period?: "weekly" | "monthly";
+  date?: string;
 }
 
 export interface Note {
@@ -105,6 +109,18 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ChatFile {
+  name: string;
+  content: string;
+  mimeType?: string;
+  encoding?: string;
+}
+
+export interface ExcelCellEdit {
+  cell: string;
+  value: string;
+}
+
 export interface ChatRequest {
   messages: ChatMessage[];
   mode: ChatMode;
@@ -112,6 +128,7 @@ export interface ChatRequest {
   sessionId?: string;
   stream?: boolean;
   temperature?: number;
+  files?: ChatFile[];
 }
 
 export interface ChatConfig {
@@ -131,4 +148,105 @@ export interface ContextInjection {
   notes: Note[];
   sessionContext: string;
   systemPrompt: string;
+}
+
+// ── Phase 1: Entity Types & Core Types ──
+
+export type EntityType =
+  | "project" | "decision" | "task" | "goal"
+  | "learning" | "concept" | "reference"
+  | "technology" | "person" | "reflection";
+
+export interface EntityNote extends Note {
+  entityType: EntityType;
+  confidence: number;
+  retrievalCount: number;
+  referenceCount: number;
+  lastReferenced: string;
+  importance: number;
+}
+
+export type MemoryTier = "knowledge" | "working" | "project";
+
+export interface TypedEdge {
+  source: string;
+  target: string;
+  kind:
+    | "uses" | "depends_on" | "implements"
+    | "references" | "derived_from"
+    | "supersedes" | "related_to"
+    | "blocks" | "enables";
+  weight: number;
+  created: string;
+}
+
+export interface KnowledgeGraphV2 {
+  nodes: Map<string, EntityNote>;
+  edges: TypedEdge[];
+}
+
+export interface DecisionRecord {
+  title: string;
+  rationale: string;
+  alternativesConsidered: string[];
+  consequences: string;
+  date: string;
+  project: string;
+  status: "proposed" | "accepted" | "superseded";
+}
+
+export interface ProjectState {
+  name: string;
+  summary: string;
+  currentGoal: string;
+  currentPhase: string;
+  currentTasks: TaskSummary[];
+  openProblems: string[];
+  recentDecisions: DecisionRecord[];
+  recentLearnings: string[];
+  relatedKnowledge: string[];
+  suggestedNextActions: string[];
+}
+
+export interface TaskSummary {
+  id: string;
+  title: string;
+  status: "pending" | "in_progress" | "completed" | "blocked";
+  priority: "low" | "medium" | "high" | "critical";
+  assignee?: string;
+  dependsOn?: string[];
+}
+
+export interface ImportanceFactors {
+  retrievalFrequency: number;
+  projectRelevance: number;
+  recency: number;
+  decisionStatus: number;
+  crossLinkDensity: number;
+  userEmphasis: number;
+}
+
+export interface RetrievalEvalResult {
+  query: string;
+  expected: string[];
+  results: string[];
+  recall5: number;
+  recall10: number;
+  mrr: number;
+  precision: number;
+}
+
+export interface MaintenanceJob {
+  name: string;
+  interval: number;
+  lastRun: number | null;
+  run(): Promise<MaintenanceResult>;
+}
+
+export interface MaintenanceResult {
+  ok: boolean;
+  job: string;
+  duration: number;
+  itemsProcessed: number;
+  errors: string[];
 }

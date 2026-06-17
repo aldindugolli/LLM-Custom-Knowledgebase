@@ -12,6 +12,9 @@ const NOTE_DIRS: Record<NoteType, string> = {
   concept: "concepts",
   project: "projects",
   reference: "references",
+  task: "tasks/active",
+  reflection: "reflections/weekly",
+  entity: "entities",
   index: ".",
 };
 
@@ -20,7 +23,7 @@ const CACHE_TTL = 5000;
 export function createVault(cfg: VaultConfig) {
   const vaultPath = path.resolve(cfg.path);
   let cache: { timestamp: number; notes: Note[] } | null = null;
-  let writeLock: Promise<void> = Promise.resolve();
+  let writeLock: Promise<unknown> = Promise.resolve();
 
   function invalidateCache() {
     cache = null;
@@ -29,6 +32,9 @@ export function createVault(cfg: VaultConfig) {
   async function ensureDirs(): Promise<void> {
     const dirs = new Set(Object.values(NOTE_DIRS));
     dirs.add(".obsidian");
+    dirs.add("templates");
+    dirs.add("tasks/completed");
+    dirs.add("reflections/monthly");
     await Promise.all(
       Array.from(dirs).map((d) =>
         fs.mkdir(path.join(vaultPath, d), { recursive: true })
@@ -42,7 +48,7 @@ export function createVault(cfg: VaultConfig) {
   }
 
   function relativePath(absolute: string): string {
-    return path.relative(vaultPath, absolute);
+    return path.relative(vaultPath, absolute).replace(/\\/g, "/");
   }
 
   async function writeNote(type: NoteType, filename: string, content: string): Promise<string> {
@@ -53,7 +59,7 @@ export function createVault(cfg: VaultConfig) {
       await fs.mkdir(path.dirname(fp), { recursive: true });
       await fs.writeFile(fp, content, "utf-8");
       invalidateCache();
-      if (type !== "index") rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
+      if (type !== "index") await rebuildIndex();
     })();
     await writeLock;
     return relativePath(fp);
@@ -133,20 +139,16 @@ export function createVault(cfg: VaultConfig) {
     const prev = writeLock;
     writeLock = (async () => {
       await prev;
-      try {
-        await fs.unlink(fp);
-        invalidateCache();
-        rebuildIndex().catch((e) => console.error("[Vault] rebuildIndex failed:", e));
-      } catch {
-        throw false;
-      }
+      await fs.unlink(fp);
+      invalidateCache();
+      await rebuildIndex();
     })();
     try { await writeLock; return true; } catch { return false; }
   }
 
   async function rebuildIndex(): Promise<void> {
     const all = await readAllNotes();
-    const types: NoteType[] = ["session", "learning", "decision", "concept", "project", "reference"];
+    const types: NoteType[] = ["session", "learning", "decision", "concept", "project", "reference", "entity", "task", "reflection"];
     const seenTitles = new Set<string>();
     const sections = types
       .map((t) => {
@@ -176,7 +178,7 @@ export function createVault(cfg: VaultConfig) {
   function buildLinkMap(allNotes: Note[]): Map<string, Note> {
     const map = new Map<string, Note>();
     for (const n of allNotes) {
-      map.set(path.basename(n.path, ".md"), n);
+      map.set(path.basename(n.path, ".md").toLowerCase(), n);
     }
     return map;
   }
@@ -184,10 +186,11 @@ export function createVault(cfg: VaultConfig) {
   function buildWikilinkIndex(allNotes: Note[]): Map<string, Set<string>> {
     const index = new Map<string, Set<string>>();
     for (const n of allNotes) {
-      const noteKey = path.basename(n.path, ".md");
+      const noteKey = path.basename(n.path, ".md").toLowerCase();
       for (const wl of n.wikilinks) {
-        if (!index.has(wl)) index.set(wl, new Set());
-        index.get(wl)!.add(noteKey);
+        const key = wl.toLowerCase();
+        if (!index.has(key)) index.set(key, new Set());
+        index.get(key)!.add(noteKey);
       }
     }
     return index;
@@ -197,7 +200,7 @@ export function createVault(cfg: VaultConfig) {
     const linkMap = buildLinkMap(allNotes);
     const reverseIndex = buildWikilinkIndex(allNotes);
     for (const n of allNotes) {
-      const noteKey = path.basename(n.path, ".md");
+      const noteKey = path.basename(n.path, ".md").toLowerCase();
       const backlinkKeys = reverseIndex.get(noteKey);
       n.backlinks = backlinkKeys ? [...backlinkKeys].map((k) => linkMap.get(k)?.path || k) : [];
     }
@@ -206,7 +209,7 @@ export function createVault(cfg: VaultConfig) {
 
   async function resolveWikilinks(note: Note, allNotes: Note[]): Promise<Note> {
     const reverseIndex = buildWikilinkIndex(allNotes);
-    const noteKey = path.basename(note.path, ".md");
+    const noteKey = path.basename(note.path, ".md").toLowerCase();
     const backlinkKeys = reverseIndex.get(noteKey);
     note.backlinks = backlinkKeys ? [...backlinkKeys] : [];
     return note;

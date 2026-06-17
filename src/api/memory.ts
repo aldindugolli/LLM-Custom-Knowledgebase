@@ -125,7 +125,7 @@ export function registerMemoryRoutes(app: FastifyInstance, memory: MemoryManager
     }
   );
 
-  app.get<{ Querystring: { type: NoteType; project?: string } }>(
+  app.get<{ Querystring: { type: NoteType; project?: string; limit?: number; offset?: number } }>(
     "/memory/list",
     {
       schema: {
@@ -135,14 +135,19 @@ export function registerMemoryRoutes(app: FastifyInstance, memory: MemoryManager
           properties: {
             type: { type: "string", enum: ["session", "learning", "decision", "concept", "project", "reference"] },
             project: { type: "string" },
+            limit: { type: "number", minimum: 1, maximum: 200 },
+            offset: { type: "number", minimum: 0 },
           },
         },
       },
     },
     async (req) => {
-      const { type, project } = req.query;
-      const notes = await memory.listByType(type, project);
-      return { ok: true, notes };
+      const { type, project, limit, offset } = req.query;
+      let notes = await memory.listByType(type, project);
+      const total = notes.length;
+      if (offset) notes = notes.slice(offset);
+      if (limit) notes = notes.slice(0, limit);
+      return { ok: true, notes, total };
     }
   );
 }

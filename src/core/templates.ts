@@ -224,7 +224,7 @@ export function indexTemplate(sections: { heading: string; items: { title: strin
   const body = sections
     .map(
       (s) => `## ${s.heading}\n\n${s.items
-        .map((i) => `- [[${i.title.replace(/\.md$/, "")}]] — ${i.summary}`)
+        .map((i) => `- [[${i.path.replace(/\.md$/, "").split(/[/\\]/).pop()}]] — ${i.summary}`)
         .join("\n")}`
     )
     .join("\n\n");

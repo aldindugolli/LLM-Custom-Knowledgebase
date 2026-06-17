@@ -20,6 +20,16 @@
   "env": {
     "HERMES_URL": "http://127.0.0.1:3412"
   },
+  "mcpServers": {
+    "hermes-mcp": {
+      "command": "npx",
+      "args": ["tsx", "src/mcp/server.ts"],
+      "env": {
+        "HERMES_URL": "http://127.0.0.1:3412",
+        "WORKSPACE_ROOT": "."
+      }
+    }
+  },
   "permission": {
     "skill": { "*": "allow" },
     "hermes-save": "allow",

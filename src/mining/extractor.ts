@@ -15,13 +15,16 @@ const DECISION_PATTERNS = [
   { regex: /we'?ll\s+(use|go with|implement)\s+(.+)/gi, group: 2 },
 ];
 
-export function createMiningEngine(memory: MemoryManager) {
+export interface MiningOptions {
+  ollamaEndpoint?: string;
+}
+
+export function createMiningEngine(memory: MemoryManager, opts?: MiningOptions) {
   function extractCandidates(text: string): { type: "learning" | "decision"; title: string; body: string }[] {
     const candidates: { type: "learning" | "decision"; title: string; body: string }[] = [];
 
     for (const pattern of LEARNING_PATTERNS) {
-      let match: RegExpExecArray | null;
-      while ((match = pattern.regex.exec(text)) !== null) {
+      for (const match of text.matchAll(pattern.regex)) {
         const content = match[pattern.group]?.trim();
         if (content && content.length > 20) {
           candidates.push({
@@ -34,8 +37,7 @@ export function createMiningEngine(memory: MemoryManager) {
     }
 
     for (const pattern of DECISION_PATTERNS) {
-      let match: RegExpExecArray | null;
-      while ((match = pattern.regex.exec(text)) !== null) {
+      for (const match of text.matchAll(pattern.regex)) {
         const content = match[pattern.group]?.trim();
         if (content && content.length > 15) {
           candidates.push({
@@ -60,8 +62,66 @@ export function createMiningEngine(memory: MemoryManager) {
     });
   }
 
+  async function llmExtract(text: string): Promise<{ type: "learning" | "decision"; title: string; body: string }[]> {
+    if (!opts?.ollamaEndpoint) return [];
+
+    const prompt = `Extract key learnings and decisions from this session transcript. Return a JSON array of objects with "type" ("learning" or "decision"), "title" (short title), and "body" (the relevant text). If nothing to extract, return [].
+
+Transcript:
+${text.slice(0, 4000)}`;
+
+    try {
+      const res = await fetch(`${opts.ollamaEndpoint}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "llama3.2",
+          messages: [
+            { role: "system", content: "You extract structured knowledge from chat transcripts. Return only valid JSON." },
+            { role: "user", content: prompt },
+          ],
+          stream: false,
+          options: { temperature: 0.1 },
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!res.ok) return [];
+
+      const data: any = await res.json();
+      const content = data.message?.content || "";
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) return [];
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(parsed)) return [];
+
+      return parsed
+        .filter((c: any) => c.type && c.title && c.body && c.body.length > 20)
+        .map((c: any) => ({
+          type: c.type === "decision" ? "decision" as const : "learning" as const,
+          title: c.title.slice(0, 80),
+          body: c.body.trim(),
+        }));
+    } catch (e) {
+      console.error("[Mining] LLM extraction failed:", e);
+      return [];
+    }
+  }
+
   async function mineFromSession(sessionNote: Note, project?: string): Promise<{ saved: number; skipped: number }> {
-    const candidates = extractCandidates(sessionNote.body);
+    const body = sessionNote.body;
+    let candidates = extractCandidates(body);
+
+    const MIN_REGEX_THRESHOLD = 2;
+    if (candidates.length < MIN_REGEX_THRESHOLD && opts?.ollamaEndpoint) {
+      const llmCandidates = await llmExtract(body);
+      if (llmCandidates.length > 0) {
+        console.log(`[Mining] LLM extraction found ${llmCandidates.length} candidates (regex found ${candidates.length})`);
+        candidates = deduplicate([...candidates, ...llmCandidates]);
+      }
+    }
+
     let saved = 0;
     let skipped = 0;
 
@@ -89,7 +149,7 @@ export function createMiningEngine(memory: MemoryManager) {
     return { saved, skipped };
   }
 
-  return { extractCandidates, mineFromSession };
+  return { extractCandidates, mineFromSession, llmExtract };
 }
 
 export type MiningEngine = ReturnType<typeof createMiningEngine>;

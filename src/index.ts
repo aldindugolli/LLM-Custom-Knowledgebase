@@ -18,6 +18,7 @@ import { createDedupEngine } from "./core/dedup.js";
 import { createLinkSuggester } from "./core/linker.js";
 import { createLLMRouter } from "./llm/router.js";
 import { createContextInjector } from "./chat/context.js";
+import { createContextBundle } from "./chat/context-bundle.js";
 import { registerMemoryRoutes } from "./api/memory.js";
 import { registerSessionRoutes } from "./api/session.js";
 import { registerHealthRoutes } from "./health/api.js";
@@ -25,6 +26,22 @@ import { registerContextRoutes } from "./api/context.js";
 import { registerSynthesisRoutes } from "./api/synthesis.js";
 import { registerKnowledgeRoutes } from "./api/knowledge.js";
 import { registerChatRoutes } from "./api/chat.js";
+import { createEntityStore } from "./entity/store.js";
+import { createEntityExtractor } from "./entity/extractor.js";
+import { createEntityLinker } from "./entity/linker.js";
+import { registerEntityRoutes } from "./entity/router.js";
+import { createDecisionTracker } from "./decision/tracker.js";
+import { registerDecisionRoutes } from "./decision/router.js";
+import { calculateImportance } from "./knowledge/scorer.js";
+import { rankNotes } from "./knowledge/ranker.js";
+import { createProjectStore } from "./project/store.js";
+import { registerProjectRoutes } from "./project/router.js";
+import { createReflectionEngine } from "./reflection/engine.js";
+import { registerReflectionRoutes } from "./reflection/router.js";
+import { createMaintenanceScheduler } from "./maintenance/scheduler.js";
+import { registerMaintenanceRoutes } from "./maintenance/router.js";
+import { createEvaluator } from "./eval/metrics.js";
+import { registerEvalRoutes } from "./eval/router.js";
 import type { VaultConfig, ChatConfig } from "./types.js";
 
 function getVaultConfig(): VaultConfig {
@@ -71,33 +88,96 @@ async function main() {
   const sessions = createSessionManager(vault, search, memory);
   const graph = createKnowledgeGraph(vault);
   const health = createHealthChecker(vault, graph);
-  const miner = createMiningEngine(memory);
+  const miner = createMiningEngine(memory, { ollamaEndpoint: chatConfig.mode === "ollama" ? chatConfig.ollama.endpoint : undefined });
   const scheduler = createMiningScheduler(vault, miner);
   const context = createContextAssembler(vault, search);
   const synthesis = createSynthesisEngine(vault, search);
   const dedup = createDedupEngine(vault, search);
   const linker = createLinkSuggester(vault);
   const llmRouter = createLLMRouter({ config: chatConfig, cwd: process.cwd() });
-  const ctxInjector = createContextInjector({ vault, search });
+
+  let modelfilePrompt: string | undefined;
+  const modelfilePath = path.join(process.cwd(), "Modelfile");
+  if (fs.existsSync(modelfilePath)) {
+    const raw = fs.readFileSync(modelfilePath, "utf-8");
+    const match = raw.match(/SYSTEM\s+"""(.*?)"""/s);
+    if (match) {
+      modelfilePrompt = match[1].trim();
+      console.log(`[Hermes] Loaded Modelfile system prompt (${modelfilePrompt.length} chars)`);
+    }
+  }
+
+  const ctxInjector = createContextInjector({ vault, search, systemPrompt: modelfilePrompt });
+  const contextBundle = createContextBundle({ vault, graph, search });
+
+  const entityStore = createEntityStore(vault);
+  const entityExtractor = createEntityExtractor(vault);
+  const entityLinker = createEntityLinker(vault);
+  const decisionTracker = createDecisionTracker(vault);
 
   await vault.rebuildIndex();
 
-  const app = Fastify({ logger: true });
-  await app.register(cors, { origin: true });
+  if (chatConfig.mode === "ollama") {
+    try {
+      const pingRes = await fetch(`${chatConfig.ollama.endpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      if (pingRes.ok) {
+        console.log(`[Hermes] Ollama reachable at ${chatConfig.ollama.endpoint}`);
+      } else {
+        console.warn(`[Hermes] Ollama at ${chatConfig.ollama.endpoint} returned status ${pingRes.status}`);
+      }
+    } catch (e) {
+      console.warn(`[Hermes] Ollama at ${chatConfig.ollama.endpoint} unreachable — chat will fail until it starts`);
+    }
+  }
+
+  const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 });
+  await app.register(cors, { origin: process.env.CORS_ORIGIN || true });
+
+  app.setErrorHandler((err: any, _req, reply) => {
+    app.log.error(err);
+    reply.status(err.statusCode || 500).send({
+      ok: false,
+      error: err.message || "Internal server error",
+    });
+  });
+
+  app.setNotFoundHandler((_req, reply) => {
+    reply.status(404).send({ ok: false, error: "Route not found" });
+  });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"));
+  let pkg: { version: string };
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"));
+  } catch {
+    pkg = { version: "0.0.0" };
+  }
 
   registerMemoryRoutes(app, memory);
   registerSessionRoutes(app, sessions);
   registerHealthRoutes(app, health);
   registerContextRoutes(app, context);
+  app.get("/context/overview", async () => {
+    const bundle = await contextBundle.build();
+    return { ok: true, context: bundle };
+  });
   registerSynthesisRoutes(app, synthesis, vault);
   registerKnowledgeRoutes(app, dedup, linker, graph, vault, synthesis);
   registerChatRoutes(app, llmRouter, ctxInjector, sessions, chatConfig);
+  registerEntityRoutes(app, entityStore, entityExtractor, entityLinker);
+  registerDecisionRoutes(app, decisionTracker);
+  const projectStore = createProjectStore(vault);
+  registerProjectRoutes(app, projectStore);
+  const reflectionEngine = createReflectionEngine(vault);
+  registerReflectionRoutes(app, reflectionEngine);
+  const maintenanceScheduler = createMaintenanceScheduler({ vault, graph, intervalMs: 3600000 });
+  registerMaintenanceRoutes(app, maintenanceScheduler);
+  maintenanceScheduler.start();
+  const evaluator = createEvaluator(vault, search);
+  registerEvalRoutes(app, evaluator);
 
   await app.register(fastifyStatic, {
-    root: path.join(__dirname, "..", "..", "public"),
+    root: path.join(__dirname, "..", "public"),
     prefix: "/ui/",
     decorateReply: false,
   });
@@ -110,7 +190,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"),
     return reply.redirect("/ui/favicon.svg");
   });
 
-  app.get("/", async () => ({
+  app.get("/api", async () => ({
     service: "brainstorm",
     version: pkg.version,
     vault: config.path,
@@ -118,6 +198,39 @@ const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"),
     chatMode: chatConfig.mode,
     gui: "http://127.0.0.1:" + config.port + "/ui",
   }));
+
+  app.get("/", async (_req, reply) => reply.redirect("/ui/"));
+
+  app.get<{ Querystring: { id?: string; query?: string; limit?: string } }>(
+    "/memory/importance",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            query: { type: "string" },
+            limit: { type: "string" },
+          },
+        },
+      },
+    },
+    async (req) => {
+      const { id, query, limit } = req.query;
+      const allNotes = await vault.readAllNotes();
+
+      if (id) {
+        const note = allNotes.find((n) => n.id === id || n.title === id);
+        if (!note) return { ok: false, error: "Note not found" };
+        const result = calculateImportance(note, allNotes);
+        return { ok: true, ...result };
+      }
+
+      const ranked = rankNotes(allNotes, query);
+      const max = limit ? parseInt(limit, 10) || 50 : 50;
+      return { ok: true, results: ranked.slice(0, max).map((r) => ({ title: r.note.title, id: r.note.id, score: r.score, factors: r.factors })) };
+    }
+  );
 
   app.get("/vault/stats", async () => {
     const allNotes = await vault.readAllNotes();

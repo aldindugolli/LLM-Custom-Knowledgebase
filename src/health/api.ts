@@ -2,6 +2,21 @@ import type { FastifyInstance } from "fastify";
 import type { HealthChecker } from "./index.js";
 
 export function registerHealthRoutes(app: FastifyInstance, health: HealthChecker) {
+  app.get("/health", async () => {
+    const report = await health.generateReport();
+    return {
+      ok: true,
+      status: report.brokenLinks.length === 0 && report.orphans.length === 0 ? "healthy" : "issues",
+      summary: {
+        totalNotes: report.totalNotes,
+        totalWikilinks: report.totalWikilinks,
+        orphanCount: report.orphans.length,
+        brokenLinkCount: report.brokenLinks.length,
+        stalePageCount: report.stalePages.length,
+      },
+    };
+  });
+
   app.get("/health/report", async () => {
     const report = await health.generateReport();
     return { ok: true, report };
