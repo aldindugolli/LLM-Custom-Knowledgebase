@@ -17,10 +17,14 @@ export function createOllamaAdapter(opts: OllamaOptions) {
     const url = `${opts.endpoint.replace(/\/+$/, "")}/api/chat`;
     const body = {
       model: opts.model,
-      messages: messages.map((m) => ({
-        role: m.role === "system" ? "system" : m.role,
-        content: m.content,
-      })),
+      messages: messages.map((m) => {
+        const msg: Record<string, unknown> = {
+          role: m.role === "system" ? "system" : m.role,
+          content: m.content,
+        };
+        if (m.images && m.images.length > 0) msg.images = m.images;
+        return msg;
+      }),
       stream: true,
       options: { temperature: opts.temperature ?? 0.7 },
     };

@@ -2,8 +2,16 @@ import type { FastifyInstance } from "fastify";
 import type { LLMRouter } from "../llm/router.js";
 import type { ContextInjector } from "../chat/context.js";
 import type { SessionManager } from "../core/session.js";
-import type { ChatRequest, ChatConfig, ExcelCellEdit } from "../types.js";
+import type { ChatRequest, ChatConfig, ExcelCellEdit, ChatMessage } from "../types.js";
 import { parseFile, applyExcelEdits } from "../chat/file-parser.js";
+
+const VISION_MODEL_PREFIXES = ["llava", "bakllava", "minicpm-v", "moondream", "cogvlm", "deepseek-vl", "internvl", "yi-vl", "qwen2-vl", "qwen2.5-vl", "gemma3"];
+
+function isVisionModel(model: string): boolean {
+  const name = model.toLowerCase();
+  if (name.includes("vision") || name.includes("/vision")) return true;
+  return VISION_MODEL_PREFIXES.some((p) => name.startsWith(p));
+}
 
 export function registerChatRoutes(
   app: FastifyInstance,
@@ -54,21 +62,69 @@ export function registerChatRoutes(
   }, async (req, reply) => {
     let { messages, mode, model, sessionId, stream, temperature, files } = req.body;
     const chatMode = mode || config.mode;
+    const hasFiles = !!(files && files.length > 0);
+    let ocrContent: string | null = null;
 
     if (files && files.length > 0) {
+      const effectiveModel = model || config.ollama.defaultModel;
+      const needsOcr = files.some((f) => {
+        const ext = f.name.toLowerCase().split(".").pop() || "";
+        if (isVisionModel(effectiveModel)) return false;
+        return ["jpg", "jpeg", "png", "gif", "webp", "pdf"].includes(ext);
+      });
       const parsed = await Promise.all(
-        files.map((f) => parseFile(f.name, f.content, f.encoding).catch(() => null))
+        files.map((f) => parseFile(f.name, f.content, f.encoding, needsOcr).catch(() => null))
       );
-      const fileBlocks = parsed.filter(Boolean).map((p) =>
-        `[Attached file: ${p!.name}]\n\`\`\`\n${p!.text}\n\`\`\``
-      ).join("\n\n");
-      const note = parsed.some((p) => p?.type === "excel")
-        ? "\n\nNote: Excel files are shown as tables above. To modify the Excel, describe the changes you want and I will apply them."
-        : "";
-      messages = [
-        { role: "system", content: `The user attached the following file(s):\n\n${fileBlocks}${note}` },
-        ...messages,
-      ];
+      const textFiles = parsed.filter((p): p is NonNullable<typeof p> => p !== null && p.type !== "image");
+      const imageFiles = parsed.filter((p): p is NonNullable<typeof p> => p !== null && p.type === "image");
+
+      if (textFiles.length > 0) {
+        const fileBlocks = textFiles.map((p) =>
+          `[Attached file: ${p.name}]\n\`\`\`\n${p.text}\n\`\`\``
+        ).join("\n\n");
+        const note = textFiles.some((p) => p.type === "excel")
+          ? "\n\nNote: Excel files are shown as tables above. To modify the Excel, describe the changes you want and I will apply them."
+          : "";
+        messages = [
+          { role: "system", content: `The user attached the following file(s):\n\n${fileBlocks}${note}` },
+          ...messages,
+        ];
+      }
+
+      if (imageFiles.length > 0) {
+        if (isVisionModel(effectiveModel)) {
+          const imageData = imageFiles.map((p) => p.base64!).filter(Boolean);
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "user") {
+              messages[i].images = [...(messages[i].images || []), ...imageData];
+              break;
+            }
+          }
+        } else {
+          if (textFiles.length === 0) {
+            ocrContent = imageFiles.map((p) => {
+              const label = `--- ${p.name} ---`;
+              if (!p.text || p.text.startsWith("[Image:")) return `${label}\n(OCR unavailable)`;
+              return `${label}\n${p.text}`;
+            }).join("\n\n");
+          } else {
+            const imgBlocks = imageFiles.map((p) => {
+              const isOcr = p.text && !p.text.startsWith("[Image:");
+              if (!isOcr) return `[Attached image: ${p.name}] (OCR unavailable)`;
+              return `[Attached image: ${p.name}]\n\`\`\`\n${p.text}\n\`\`\``;
+            }).join("\n\n");
+            const ocrWarning = `IMPORTANT: Some attached files are images processed by OCR. Text shown in code blocks is the raw OCR output. Report ONLY what you literally see in those blocks. NEVER invent metadata.`;
+            messages = [
+              { role: "system", content: ocrWarning },
+              ...messages,
+            ];
+            const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+            if (lastUserMsg) {
+              lastUserMsg.content = `${imgBlocks}\n\n${lastUserMsg.content}`;
+            }
+          }
+        }
+      }
     }
 
     const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
@@ -83,8 +139,24 @@ export function registerChatRoutes(
       }
     };
 
+    if (ocrContent !== null) {
+      if (stream === false) {
+        return { ok: true, source: "ocr", content: ocrContent };
+      }
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      reply.raw.write(`data: ${JSON.stringify({ token: ocrContent })}\n\n`);
+      reply.raw.write(`data: ${JSON.stringify({ done: true, source: "ocr" })}\n\n`);
+      reply.raw.end();
+      return;
+    }
+
     if (stream === false) {
-      const enriched = await context.inject(messages, sessionId);
+      const enriched = await context.inject(messages, sessionId, { skipVault: hasFiles });
       const response = await new Promise<string>((resolve, reject) => {
         const tokens: string[] = [];
         router.chat(
@@ -108,7 +180,7 @@ export function registerChatRoutes(
       "X-Accel-Buffering": "no",
     });
 
-    const enriched = await context.inject(messages, sessionId);
+    const enriched = await context.inject(messages, sessionId, { skipVault: hasFiles });
     const abortController = new AbortController();
     let fullResponse = "";
     let streamEnded = false;

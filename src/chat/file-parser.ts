@@ -4,8 +4,11 @@ export interface ParsedFile {
   name: string;
   text: string;
   raw: Buffer;
-  type: "text" | "pdf" | "excel";
+  type: "text" | "pdf" | "excel" | "image";
+  base64?: string;
 }
+
+const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
 
 function padCol(i: number): string {
   let s = "";
@@ -69,21 +72,110 @@ async function parsePdf(buffer: Buffer): Promise<string> {
   return pages.join("\n\n");
 }
 
-export async function parseFile(fileName: string, content: string | Buffer, encoding?: string): Promise<ParsedFile> {
+let tesseractWorker: any = null;
+
+async function getTesseract(): Promise<{ worker: any; recognize(buf: Buffer): Promise<string> }> {
+  if (!tesseractWorker) {
+    const { createWorker } = await import("tesseract.js");
+    tesseractWorker = await createWorker("eng");
+  }
+  return {
+    worker: tesseractWorker,
+    async recognize(buf: Buffer): Promise<string> {
+      const { data } = await tesseractWorker.recognize(buf);
+      return (data.text || "").trim();
+    },
+  };
+}
+
+export async function shutdownTesseract(): Promise<void> {
+  if (tesseractWorker) {
+    await tesseractWorker.terminate();
+    tesseractWorker = null;
+  }
+}
+
+async function ocrImage(buffer: Buffer): Promise<string> {
+  try {
+    console.log(`[OCR] Starting image OCR, buffer size: ${buffer.length} bytes`);
+    const tess = await getTesseract();
+    const text = await tess.recognize(buffer);
+    console.log(`[OCR] Done, text length: ${text.length}`);
+    return text || "(no text found in image)";
+  } catch (e: any) {
+    console.error(`[OCR] Image OCR failed: ${e?.message ?? e}`);
+    return "(OCR failed)";
+  }
+}
+
+async function ocrPdf(buffer: Buffer): Promise<string> {
+  try {
+    console.log(`[OCR] Starting PDF OCR, buffer size: ${buffer.length} bytes`);
+    const tess = await getTesseract();
+    const pdfjsMod = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const canvasMod = await import("canvas");
+    const { getDocument } = pdfjsMod;
+    const { createCanvas, Image } = canvasMod;
+
+    const doc = await getDocument({ data: new Uint8Array(buffer) }).promise;
+    const pageTexts: string[] = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = createCanvas(viewport.width, viewport.height);
+      const ctx = canvas.getContext("2d") as any;
+      const orig = ctx.drawImage.bind(ctx);
+      ctx.drawImage = function (img: any, ...args: any) {
+        if (img && typeof img.toBuffer === "function" && !(img instanceof Image)) {
+          const pngBuf = img.toBuffer("image/png");
+          if (pngBuf && pngBuf.length > 0) {
+            const img2 = new Image();
+            img2.src = pngBuf;
+            return orig(img2, ...args);
+          }
+        }
+        return orig(img, ...args);
+      };
+      await (page.render as any)({ canvasContext: ctx, viewport }).promise;
+      const png = canvas.toBuffer("image/png");
+      const text = await tess.recognize(png);
+      pageTexts.push(`[Page ${i}]\n${text || "(no text found)"}`);
+      console.log(`[OCR] PDF page ${i}/${doc.numPages}, text length: ${text.length}`);
+    }
+    return pageTexts.join("\n\n");
+  } catch (e: any) {
+    console.error(`[OCR] PDF OCR failed: ${e?.message ?? e}`);
+    return "(PDF OCR failed)";
+  }
+}
+
+export async function parseFile(fileName: string, content: string | Buffer, encoding?: string, ocr?: boolean): Promise<ParsedFile> {
   const ext = fileName.toLowerCase().split(".").pop() || "";
-  const isBinary = encoding === "base64" || ext === "pdf" || ext === "xlsx" || ext === "xls";
+  const isBinary = encoding === "base64" || ext === "pdf" || ext === "xlsx" || ext === "xls" || IMAGE_EXTS.has(ext);
 
   let buffer: Buffer;
+  let base64Str: string | undefined;
   if (isBinary && typeof content === "string") {
     buffer = Buffer.from(content, "base64");
+    base64Str = content;
   } else if (typeof content === "string") {
     buffer = Buffer.from(content, "utf-8");
   } else {
     buffer = content;
   }
 
+  if (IMAGE_EXTS.has(ext)) {
+    const text = ocr ? await ocrImage(buffer) : `[Image: ${fileName}]`;
+    return { name: fileName, text, raw: buffer, type: "image", base64: base64Str };
+  }
+
   if (ext === "pdf") {
-    return { name: fileName, text: await parsePdf(buffer), raw: buffer, type: "pdf" };
+    let text = await parsePdf(buffer);
+    if (ocr && text.replace(/\[Page \d+\]/g, "").trim().length < 5) {
+      console.log(`[OCR] PDF text too short (${text.length} chars), falling back to render+OCR`);
+      text = await ocrPdf(buffer);
+    }
+    return { name: fileName, text, raw: buffer, type: "pdf" };
   }
 
   if (ext === "xlsx" || ext === "xls") {

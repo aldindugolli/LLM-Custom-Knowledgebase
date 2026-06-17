@@ -98,14 +98,13 @@ async function loadModels() {
 
 function isBinaryFile(name) {
   const ext = name.toLowerCase().split('.').pop();
-  return ext === 'pdf' || ext === 'xlsx' || ext === 'xls';
+  return ext === 'pdf' || ext === 'xlsx' || ext === 'xls' || ['jpg','jpeg','png','gif','webp'].includes(ext);
 }
 
 function mimeTypeFor(name) {
   const ext = name.toLowerCase().split('.').pop();
-  if (ext === 'pdf') return 'application/pdf';
-  if (ext === 'xlsx' || ext === 'xls') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-  return 'text/plain';
+  const mimeMap = { pdf: 'application/pdf', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xls: 'application/vnd.ms-excel', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
+  return mimeMap[ext] || 'text/plain';
 }
 
 function bufferToBase64(buf) {

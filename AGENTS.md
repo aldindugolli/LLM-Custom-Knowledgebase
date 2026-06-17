@@ -139,3 +139,39 @@ GitHub Actions workflow in `.github/workflows/ci.yml`:
 | `mining.test.ts` | 10 | All 5 learning patterns, 3 decision patterns, dedup, short-filter, mineFromSession save/skip, llmExtract fallback |
 | `session.test.ts` | 7 | Start, getActiveSession, list active, end (completes + removes from active), end unknown, appendChatExchange, project brief |
 | `routes.test.ts` | 15 | Health, memory list/search/save/update/delete/context/synthesis/knowledge, 404, pagination, validation |
+
+## Reliable Server Restart
+
+`npm run dev` uses `tsx watch` which opens a file watcher and hangs on stdin — bad for background restarts. Use `npm run dev:no-watch` instead:
+
+```bash
+# Kill the old server
+PID=$(netstat -ano | grep LISTENING | grep ":3412 " | awk '{print $5}')
+[ -n "$PID" ] && taskkill //F //PID "$PID"
+sleep 1
+
+# Start (no stdin, no watch, logged to file)
+nohup npx tsx src/index.ts > .hermes.log 2>&1 &
+
+# Verify
+sleep 3 && curl -s http://127.0.0.1:3412/health
+```
+
+**Never** set a bash tool timeout < 30s for server start commands — `tsx` itself takes 2-3s to boot even without watch.
+
+## Image Upload Support
+
+Files with extensions `jpg`, `jpeg`, `png`, `gif`, `webp` are detected as images by `file-parser.ts` and stored as base64. In `chat.ts`:
+
+1. If the effective model is vision-capable (name contains `vision`, starts with `llava`, `bakllava`, `minicpm-v`, `moondream`, `cogvlm`, `deepseek-vl`, `internvl`, `yi-vl`, `qwen2-vl`, `qwen2.5-vl`, or `gemma3`), images are attached to the last user message via the Ollama `images[]` field
+2. If the model is text-only, OCR (via tesseract.js) extracts text from the image — for image-only uploads the OCR text is returned directly (no LLM call); for mixed uploads (images + text/PDF files) the OCR text is sent to the LLM alongside other files with a system warning
+
+Known non-vision models in use: `qwen2.5-coder:1.5b`, `arrodes:latest`.
+
+### OCR (tesseract.js v7)
+
+Uses `createWorker("eng")` API (v7 breaking change — no more `recognize()` standalone function). `ocrImage()` in `file-parser.ts` creates a worker, recognizes the buffer, terminates, returns text. ESM import works via `await import("tesseract.js")` importing `createWorker` directly.
+
+### Scanned PDF OCR Fallback
+
+`ocrPdf()` in `file-parser.ts` renders PDF pages to canvas (pdfjs-dist v6 legacy build + node-canvas) at 2x scale, then runs Tesseract OCR on each rendered PNG. Triggered when `parsePdf` returns < 5 characters of actual text (after stripping `[Page N]` markers). Uses `page.render({ canvas, viewport })` API (not `canvasContext` — that changed between pdfjs-dist versions).

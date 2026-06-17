@@ -42,6 +42,7 @@ import { createMaintenanceScheduler } from "./maintenance/scheduler.js";
 import { registerMaintenanceRoutes } from "./maintenance/router.js";
 import { createEvaluator } from "./eval/metrics.js";
 import { registerEvalRoutes } from "./eval/router.js";
+import { registerOllamaRoutes } from "./ollama/router.js";
 import type { VaultConfig, ChatConfig } from "./types.js";
 
 function getVaultConfig(): VaultConfig {
@@ -175,6 +176,7 @@ async function main() {
   maintenanceScheduler.start();
   const evaluator = createEvaluator(vault, search);
   registerEvalRoutes(app, evaluator);
+  registerOllamaRoutes(app);
 
   await app.register(fastifyStatic, {
     root: path.join(__dirname, "..", "public"),

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { execSync } from "child_process";
+import { execSync, exec } from "child_process";
 import { getHardwareInfo } from "./hwinfo.js";
 import { getAllModels, getModelsByUseCase, getInstalledModels, type UseCase } from "./models.js";
 import { scoreModels } from "./scorer.js";
@@ -71,12 +71,16 @@ export function registerOllamaRoutes(app: FastifyInstance) {
     },
     async (req, _reply) => {
       const { model } = req.body;
-      try {
-        execSync(`ollama pull ${model}`, { encoding: "utf-8", timeout: 600000 });
-        return { ok: true, model, message: `Successfully pulled ${model}` };
-      } catch (err) {
-        return { ok: false, error: `Failed to pull ${model}: ${String(err)}` };
-      }
+      return new Promise((resolve) => {
+        exec(`ollama pull ${model}`, { timeout: 600000 }, (err, stdout) => {
+          if (err) {
+            resolve({ ok: false, error: `Failed to pull ${model}: ${err.message}` });
+          } else {
+            const status = stdout.trim().split("\n").pop() || "done";
+            resolve({ ok: true, model, message: status });
+          }
+        });
+      });
     }
   );
 }

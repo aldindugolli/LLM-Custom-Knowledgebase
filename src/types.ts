@@ -107,6 +107,7 @@ export type ChatMode = "ollama" | "opencode";
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
+  images?: string[];
 }
 
 export interface ChatFile {

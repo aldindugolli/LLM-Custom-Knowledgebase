@@ -25,7 +25,8 @@ export function createContextInjector(opts: ContextInjectorOptions) {
 
   async function inject(
     messages: ChatMessage[],
-    sessionId?: string
+    sessionId?: string,
+    opts2?: { skipVault?: boolean }
   ): Promise<ChatMessage[]> {
     const userMsg = [...messages].reverse().find((m) => m.role === "user")?.content || "";
     const existingSys = messages.find((m) => m.role === "system")?.content || "";
@@ -33,56 +34,48 @@ export function createContextInjector(opts: ContextInjectorOptions) {
     const maxNotes = opts.maxNotes || 8;
     const maxTokens = opts.maxTokens || 4000;
 
-    const results = await opts.search.search(
-      { query: userMsg, limit: maxNotes },
-    );
+    let memoryBlock = "";
+    if (!opts2?.skipVault) {
+      const results = await opts.search.search(
+        { query: userMsg, limit: maxNotes },
+      );
 
-    let relatedNotes: Note[] = [];
-    if (sessionId) {
-      const all = await opts.vault.readAllNotes();
-      const sessionNote = all.find((n) => n.id === sessionId);
-      if (sessionNote) {
-        const related = await opts.search.findRelated(sessionNote.id, all);
-        relatedNotes = related.slice(0, 5);
+      let relatedNotes: Note[] = [];
+      if (sessionId) {
+        const all = await opts.vault.readAllNotes();
+        const sessionNote = all.find((n) => n.id === sessionId);
+        if (sessionNote) {
+          const related = await opts.search.findRelated(sessionNote.id, all);
+          relatedNotes = related.slice(0, 5);
+        }
+      }
+
+      const seenIds = new Set(results.map((r) => r.note.id));
+      const combined = [
+        ...results.map((r) => r.note),
+        ...relatedNotes.filter((n) => !seenIds.has(n.id)),
+      ].slice(0, maxNotes);
+
+      memoryBlock = combined
+        .map(
+          (n, i) =>
+            `[${n.type.toUpperCase()}] ${n.title}\n${(n.body || "").slice(0, 500)}`
+        )
+        .join("\n\n");
+
+      while (estimateTokens(basePrompt) + estimateTokens(memoryBlock) > maxTokens && memoryBlock.length > 200) {
+        memoryBlock = memoryBlock.slice(0, -100);
       }
     }
-
-    const seenIds = new Set(results.map((r) => r.note.id));
-    const combined = [
-      ...results.map((r) => r.note),
-      ...relatedNotes.filter((n) => !seenIds.has(n.id)),
-    ].slice(0, maxNotes);
-
-    const memoryBlock = combined
-      .map(
-        (n, i) =>
-          `[${n.type.toUpperCase()}] ${n.title}\n${(n.body || "").slice(0, 500)}`
-      )
-      .join("\n\n");
 
     const sessionTag = sessionId ? `\nActive Session: ${sessionId}` : "";
     const vaultSection = memoryBlock
       ? `Relevant vault notes:\n${memoryBlock}`
       : "";
 
-    let totalTokens = estimateTokens(basePrompt) + estimateTokens(vaultSection) + estimateTokens(sessionTag);
-    let truncatedMemory = memoryBlock;
-
-    while (totalTokens > maxTokens && truncatedMemory.length > 200) {
-      truncatedMemory = truncatedMemory.slice(0, -100);
-      const shortSection = truncatedMemory
-        ? `Relevant vault notes:\n${truncatedMemory}`
-        : "";
-      totalTokens = estimateTokens(basePrompt) + estimateTokens(shortSection) + estimateTokens(sessionTag);
-    }
-
-    const finalVaultSection = truncatedMemory
-      ? `Relevant vault notes:\n${truncatedMemory}`
-      : "";
-
     const finalSys = [
       existingSys || basePrompt,
-      finalVaultSection,
+      vaultSection,
       sessionTag,
     ].filter(Boolean).join("\n\n");
 
